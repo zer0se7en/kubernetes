@@ -85,6 +85,14 @@ func (plugin *secretPlugin) RequiresRemount() bool {
 	return true
 }
 
+func (plugin *secretPlugin) SupportsMountOption() bool {
+	return false
+}
+
+func (plugin *secretPlugin) SupportsBulkVolumeVerification() bool {
+	return false
+}
+
 func (plugin *secretPlugin) NewMounter(spec *volume.Spec, pod *v1.Pod, opts volume.VolumeOptions) (volume.Mounter, error) {
 	return &secretVolumeMounter{
 		secretVolume: &secretVolume{
@@ -208,7 +216,7 @@ func (b *secretVolumeMounter) SetUpAt(dir string, fsGroup *int64) error {
 		len(secret.Data),
 		totalBytes)
 
-	payload, err := makePayload(b.source.Items, secret, b.source.DefaultMode, optional)
+	payload, err := MakePayload(b.source.Items, secret, b.source.DefaultMode, optional)
 	if err != nil {
 		return err
 	}
@@ -235,7 +243,8 @@ func (b *secretVolumeMounter) SetUpAt(dir string, fsGroup *int64) error {
 	return nil
 }
 
-func makePayload(mappings []v1.KeyToPath, secret *v1.Secret, defaultMode *int32, optional bool) (map[string]volumeutil.FileProjection, error) {
+// Note: this function is exported so that it can be called from the projection volume driver
+func MakePayload(mappings []v1.KeyToPath, secret *v1.Secret, defaultMode *int32, optional bool) (map[string]volumeutil.FileProjection, error) {
 	if defaultMode == nil {
 		return nil, fmt.Errorf("No defaultMode used, not even the default value for it")
 	}

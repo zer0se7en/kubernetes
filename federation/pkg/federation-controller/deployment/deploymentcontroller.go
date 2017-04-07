@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	clientv1 "k8s.io/client-go/pkg/api/v1"
@@ -54,9 +55,11 @@ const (
 	FedDeploymentPreferencesAnnotation = "federation.kubernetes.io/deployment-preferences"
 	allClustersKey                     = "THE_ALL_CLUSTER_KEY"
 	UserAgentName                      = "Federation-Deployment-Controller"
+	ControllerName                     = "deployments"
 )
 
 var (
+	RequiredResources        = []schema.GroupVersionResource{extensionsv1.SchemeGroupVersion.WithResource("deployments")}
 	deploymentReviewDelay    = 10 * time.Second
 	clusterAvailableDelay    = 20 * time.Second
 	clusterUnavailableDelay  = 60 * time.Second
@@ -101,7 +104,7 @@ type DeploymentController struct {
 	defaultPlanner *planner.Planner
 }
 
-// NewclusterController returns a new cluster controller
+// NewDeploymentController returns a new deployment controller
 func NewDeploymentController(federationClient fedclientset.Interface) *DeploymentController {
 	broadcaster := record.NewBroadcaster()
 	broadcaster.StartRecordingToSink(eventsink.NewFederatedEventSink(federationClient))
@@ -198,7 +201,8 @@ func NewDeploymentController(federationClient fedclientset.Interface) *Deploymen
 		},
 		func(client kubeclientset.Interface, obj runtime.Object) error {
 			rs := obj.(*extensionsv1.Deployment)
-			err := client.Extensions().Deployments(rs.Namespace).Delete(rs.Name, &metav1.DeleteOptions{})
+			orphanDependents := false
+			err := client.Extensions().Deployments(rs.Namespace).Delete(rs.Name, &metav1.DeleteOptions{OrphanDependents: &orphanDependents})
 			return err
 		})
 
@@ -231,14 +235,14 @@ func (fdc *DeploymentController) hasFinalizerFunc(obj runtime.Object, finalizer 
 	return false
 }
 
-// Removes the finalizer from the given objects ObjectMeta.
+// Removes the finalizers from the given objects ObjectMeta.
 // Assumes that the given object is a deployment.
-func (fdc *DeploymentController) removeFinalizerFunc(obj runtime.Object, finalizer string) (runtime.Object, error) {
+func (fdc *DeploymentController) removeFinalizerFunc(obj runtime.Object, finalizers []string) (runtime.Object, error) {
 	deployment := obj.(*extensionsv1.Deployment)
 	newFinalizers := []string{}
 	hasFinalizer := false
 	for i := range deployment.ObjectMeta.Finalizers {
-		if string(deployment.ObjectMeta.Finalizers[i]) != finalizer {
+		if !deletionhelper.ContainsString(finalizers, deployment.ObjectMeta.Finalizers[i]) {
 			newFinalizers = append(newFinalizers, deployment.ObjectMeta.Finalizers[i])
 		} else {
 			hasFinalizer = true
@@ -251,7 +255,7 @@ func (fdc *DeploymentController) removeFinalizerFunc(obj runtime.Object, finaliz
 	deployment.ObjectMeta.Finalizers = newFinalizers
 	deployment, err := fdc.fedClient.Extensions().Deployments(deployment.Namespace).Update(deployment)
 	if err != nil {
-		return nil, fmt.Errorf("failed to remove finalizer %s from deployment %s: %v", finalizer, deployment.Name, err)
+		return nil, fmt.Errorf("failed to remove finalizers %v from deployment %s: %v", finalizers, deployment.Name, err)
 	}
 	return deployment, nil
 }
@@ -497,7 +501,7 @@ func (fdc *DeploymentController) reconcileDeployment(key string) (reconciliation
 	if fd.DeletionTimestamp != nil {
 		if err := fdc.delete(fd); err != nil {
 			glog.Errorf("Failed to delete %s: %v", fd.Name, err)
-			fdc.eventRecorder.Eventf(fd, api.EventTypeNormal, "DeleteFailed",
+			fdc.eventRecorder.Eventf(fd, api.EventTypeWarning, "DeleteFailed",
 				"Deployment delete failed: %v", err)
 			return statusError, err
 		}
@@ -593,11 +597,13 @@ func (fdc *DeploymentController) reconcileDeployment(key string) (reconciliation
 			fedStatus.Replicas += currentLd.Status.Replicas
 			fedStatus.AvailableReplicas += currentLd.Status.AvailableReplicas
 			fedStatus.UnavailableReplicas += currentLd.Status.UnavailableReplicas
+			fedStatus.ReadyReplicas += currentLd.Status.ReadyReplicas
 		}
 	}
 	if fedStatus.Replicas != fd.Status.Replicas ||
 		fedStatus.AvailableReplicas != fd.Status.AvailableReplicas ||
-		fedStatus.UnavailableReplicas != fd.Status.UnavailableReplicas {
+		fedStatus.UnavailableReplicas != fd.Status.UnavailableReplicas ||
+		fedStatus.ReadyReplicas != fd.Status.ReadyReplicas {
 		fd.Status = fedStatus
 		_, err = fdc.fedClient.Extensions().Deployments(fd.Namespace).UpdateStatus(fd)
 		if err != nil {
@@ -610,7 +616,7 @@ func (fdc *DeploymentController) reconcileDeployment(key string) (reconciliation
 		return statusAllOk, nil
 	}
 	err = fdc.fedUpdater.UpdateWithOnError(operations, updateTimeout, func(op fedutil.FederatedOperation, operror error) {
-		fdc.eventRecorder.Eventf(fd, api.EventTypeNormal, "FailedUpdateInCluster",
+		fdc.eventRecorder.Eventf(fd, api.EventTypeWarning, "FailedUpdateInCluster",
 			"Deployment update in cluster %s failed: %v", op.ClusterName, operror)
 	})
 	if err != nil {

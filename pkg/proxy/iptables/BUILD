@@ -18,6 +18,7 @@ go_library(
         "//pkg/features:go_default_library",
         "//pkg/proxy:go_default_library",
         "//pkg/proxy/healthcheck:go_default_library",
+        "//pkg/proxy/util:go_default_library",
         "//pkg/util/exec:go_default_library",
         "//pkg/util/iptables:go_default_library",
         "//pkg/util/sysctl:go_default_library",
@@ -49,7 +50,6 @@ go_test(
         "//vendor:k8s.io/apimachinery/pkg/apis/meta/v1",
         "//vendor:k8s.io/apimachinery/pkg/types",
         "//vendor:k8s.io/apimachinery/pkg/util/intstr",
-        "//vendor:k8s.io/apimachinery/pkg/util/sets",
     ],
 )
 

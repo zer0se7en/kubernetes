@@ -149,10 +149,10 @@ func makePortsAndBindings(pm []*runtimeapi.PortMapping) (map[dockernat.Port]stru
 		// Some of this port stuff is under-documented voodoo.
 		// See http://stackoverflow.com/questions/20428302/binding-a-port-to-a-host-interface-using-the-rest-api
 		var protocol string
-		switch strings.ToUpper(string(port.Protocol)) {
-		case "UDP":
+		switch port.Protocol {
+		case runtimeapi.Protocol_UDP:
 			protocol = "/udp"
-		case "TCP":
+		case runtimeapi.Protocol_TCP:
 			protocol = "/tcp"
 		default:
 			glog.Warningf("Unknown protocol %q: defaulting to TCP", port.Protocol)
@@ -271,7 +271,7 @@ func getUserFromImageUser(imageUser string) (*int64, string) {
 }
 
 // See #33189. If the previous attempt to create a sandbox container name FOO
-// failed due to "device or resource busy", it is possbile that docker did
+// failed due to "device or resource busy", it is possible that docker did
 // not clean up properly and has inconsistent internal state. Docker would
 // not report the existence of FOO, but would complain if user wants to
 // create a new container named FOO. To work around this, we parse the error
@@ -280,7 +280,7 @@ func getUserFromImageUser(imageUser string) (*int64, string) {
 // See #40443. Sometimes even removal may fail with "no such container" error.
 // In that case we have to create the container with a randomized name.
 // TODO(random-liu): Remove this work around after docker 1.11 is deprecated.
-// TODO(#33189): Monitor the tests to see if the fix is sufficent.
+// TODO(#33189): Monitor the tests to see if the fix is sufficient.
 func recoverFromCreationConflictIfNeeded(client dockertools.DockerInterface, createConfig dockertypes.ContainerCreateConfig, err error) (*dockertypes.ContainerCreateResponse, error) {
 	matches := conflictRE.FindStringSubmatch(err.Error())
 	if len(matches) != 2 {
@@ -319,4 +319,20 @@ func getSecurityOptSeparator(v *semver.Version) rune {
 	default:
 		return dockertools.SecurityOptSeparatorNew
 	}
+}
+
+// ensureSandboxImageExists pulls the sandbox image when it's not present.
+func ensureSandboxImageExists(client dockertools.DockerInterface, image string) error {
+	_, err := client.InspectImageByRef(image)
+	if err == nil {
+		return nil
+	}
+	if !dockertools.IsImageNotFoundError(err) {
+		return fmt.Errorf("failed to inspect sandbox image %q: %v", image, err)
+	}
+	err = client.PullImage(image, dockertypes.AuthConfig{}, dockertypes.ImagePullOptions{})
+	if err != nil {
+		return fmt.Errorf("unable to pull sandbox image %q: %v", image, err)
+	}
+	return nil
 }

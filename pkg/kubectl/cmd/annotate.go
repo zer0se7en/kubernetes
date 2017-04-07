@@ -36,6 +36,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	"k8s.io/kubernetes/pkg/kubectl/resource"
+	"k8s.io/kubernetes/pkg/printers"
 	"k8s.io/kubernetes/pkg/util/i18n"
 )
 
@@ -74,7 +75,7 @@ var (
 
 		` + valid_resources)
 
-	annotate_example = templates.Examples(`
+	annotate_example = templates.Examples(i18n.T(`
     # Update pod 'foo' with the annotation 'description' and the value 'my frontend'.
     # If the same annotation is set multiple times, only the last value will be applied
     kubectl annotate pods foo description='my frontend'
@@ -93,7 +94,7 @@ var (
 
     # Update pod 'foo' by removing an annotation named 'description' if it exists.
     # Does not require the --overwrite flag.
-    kubectl annotate pods foo description-`)
+    kubectl annotate pods foo description-`))
 )
 
 func NewCmdAnnotate(f cmdutil.Factory, out io.Writer) *cobra.Command {
@@ -101,7 +102,7 @@ func NewCmdAnnotate(f cmdutil.Factory, out io.Writer) *cobra.Command {
 
 	// retrieve a list of handled resources from printer as valid args
 	validArgs, argAliases := []string{}, []string{}
-	p, err := f.Printer(nil, kubectl.PrintOptions{
+	p, err := f.Printer(nil, printers.PrintOptions{
 		ColumnLabels: []string{},
 	})
 	cmdutil.CheckErr(err)
@@ -132,7 +133,7 @@ func NewCmdAnnotate(f cmdutil.Factory, out io.Writer) *cobra.Command {
 	cmd.Flags().Bool("local", false, "If true, annotation will NOT contact api-server but run locally.")
 	cmd.Flags().StringP("selector", "l", "", "Selector (label query) to filter on, supports '=', '==', and '!='.")
 	cmd.Flags().Bool("all", false, "select all resources in the namespace of the specified resource types")
-	cmd.Flags().String("resource-version", "", "If non-empty, the annotation update will only succeed if this is the current resource-version for the object. Only valid when specifying a single resource.")
+	cmd.Flags().String("resource-version", "", i18n.T("If non-empty, the annotation update will only succeed if this is the current resource-version for the object. Only valid when specifying a single resource."))
 	usage := "identifying the resource to update the annotation"
 	cmdutil.AddFilenameOptionFlags(cmd, &options.FilenameOptions, usage)
 	cmdutil.AddDryRunFlag(cmd)
@@ -183,13 +184,13 @@ func (o AnnotateOptions) RunAnnotate(f cmdutil.Factory, cmd *cobra.Command) erro
 		return err
 	}
 
-	changeCause := f.Command()
+	changeCause := f.Command(cmd, false)
 
 	mapper, typer, err := f.UnstructuredObject()
 	if err != nil {
 		return err
 	}
-	b := resource.NewBuilder(mapper, typer, resource.ClientMapperFunc(f.UnstructuredClientForMapping), unstructured.UnstructuredJSONScheme).
+	b := resource.NewBuilder(mapper, f.CategoryExpander(), typer, resource.ClientMapperFunc(f.UnstructuredClientForMapping), unstructured.UnstructuredJSONScheme).
 		ContinueOnError().
 		NamespaceParam(namespace).DefaultNamespace().
 		FilenameParam(enforceNamespace, &o.FilenameOptions).

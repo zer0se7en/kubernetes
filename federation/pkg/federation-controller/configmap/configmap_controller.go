@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	pkgruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	clientv1 "k8s.io/client-go/pkg/api/v1"
@@ -44,6 +45,11 @@ import (
 
 const (
 	allClustersKey = "ALL_CLUSTERS"
+	ControllerName = "configmaps"
+)
+
+var (
+	RequiredResources = []schema.GroupVersionResource{apiv1.SchemeGroupVersion.WithResource("configmaps")}
 )
 
 type ConfigMapController struct {
@@ -163,7 +169,8 @@ func NewConfigMapController(client federationclientset.Interface) *ConfigMapCont
 		},
 		func(client kubeclientset.Interface, obj pkgruntime.Object) error {
 			configmap := obj.(*apiv1.ConfigMap)
-			err := client.Core().ConfigMaps(configmap.Namespace).Delete(configmap.Name, &metav1.DeleteOptions{})
+			orphanDependents := false
+			err := client.Core().ConfigMaps(configmap.Namespace).Delete(configmap.Name, &metav1.DeleteOptions{OrphanDependents: &orphanDependents})
 			return err
 		})
 
@@ -196,13 +203,13 @@ func (configmapcontroller *ConfigMapController) hasFinalizerFunc(obj pkgruntime.
 	return false
 }
 
-// removeFinalizerFunc removes the finalizer from the given objects ObjectMeta. Assumes that the given object is a configmap.
-func (configmapcontroller *ConfigMapController) removeFinalizerFunc(obj pkgruntime.Object, finalizer string) (pkgruntime.Object, error) {
+// removeFinalizerFunc removes the given finalizers from the given objects ObjectMeta. Assumes that the given object is a configmap.
+func (configmapcontroller *ConfigMapController) removeFinalizerFunc(obj pkgruntime.Object, finalizers []string) (pkgruntime.Object, error) {
 	configmap := obj.(*apiv1.ConfigMap)
 	newFinalizers := []string{}
 	hasFinalizer := false
 	for i := range configmap.ObjectMeta.Finalizers {
-		if string(configmap.ObjectMeta.Finalizers[i]) != finalizer {
+		if !deletionhelper.ContainsString(finalizers, configmap.ObjectMeta.Finalizers[i]) {
 			newFinalizers = append(newFinalizers, configmap.ObjectMeta.Finalizers[i])
 		} else {
 			hasFinalizer = true
@@ -215,7 +222,7 @@ func (configmapcontroller *ConfigMapController) removeFinalizerFunc(obj pkgrunti
 	configmap.ObjectMeta.Finalizers = newFinalizers
 	configmap, err := configmapcontroller.federatedApiClient.Core().ConfigMaps(configmap.Namespace).Update(configmap)
 	if err != nil {
-		return nil, fmt.Errorf("failed to remove finalizer %s from configmap %s: %v", finalizer, configmap.Name, err)
+		return nil, fmt.Errorf("failed to remove finalizers %v from configmap %s: %v", finalizers, configmap.Name, err)
 	}
 	return configmap, nil
 }
@@ -317,13 +324,18 @@ func (configmapcontroller *ConfigMapController) reconcileConfigMap(configmap typ
 		glog.V(8).Infof("Skipping not federated config map: %s", key)
 		return
 	}
-	baseConfigMap := baseConfigMapObj.(*apiv1.ConfigMap)
+	obj, err := api.Scheme.DeepCopy(baseConfigMapObj)
+	configMap, ok := obj.(*apiv1.ConfigMap)
+	if err != nil || !ok {
+		glog.Errorf("Error in retrieving obj from store: %v, %v", ok, err)
+		return
+	}
 
 	// Check if deletion has been requested.
-	if baseConfigMap.DeletionTimestamp != nil {
-		if err := configmapcontroller.delete(baseConfigMap); err != nil {
+	if configMap.DeletionTimestamp != nil {
+		if err := configmapcontroller.delete(configMap); err != nil {
 			glog.Errorf("Failed to delete %s: %v", configmap, err)
-			configmapcontroller.eventRecorder.Eventf(baseConfigMap, api.EventTypeNormal, "DeleteFailed",
+			configmapcontroller.eventRecorder.Eventf(configMap, api.EventTypeNormal, "DeleteFailed",
 				"ConfigMap delete failed: %v", err)
 			configmapcontroller.deliverConfigMap(configmap, 0, true)
 		}
@@ -331,18 +343,18 @@ func (configmapcontroller *ConfigMapController) reconcileConfigMap(configmap typ
 	}
 
 	glog.V(3).Infof("Ensuring delete object from underlying clusters finalizer for configmap: %s",
-		baseConfigMap.Name)
+		configMap.Name)
 	// Add the required finalizers before creating a configmap in underlying clusters.
-	updatedConfigMapObj, err := configmapcontroller.deletionHelper.EnsureFinalizers(baseConfigMap)
+	updatedConfigMapObj, err := configmapcontroller.deletionHelper.EnsureFinalizers(configMap)
 	if err != nil {
 		glog.Errorf("Failed to ensure delete object from underlying clusters finalizer in configmap %s: %v",
-			baseConfigMap.Name, err)
+			configMap.Name, err)
 		configmapcontroller.deliverConfigMap(configmap, 0, false)
 		return
 	}
-	baseConfigMap = updatedConfigMapObj.(*apiv1.ConfigMap)
+	configMap = updatedConfigMapObj.(*apiv1.ConfigMap)
 
-	glog.V(3).Infof("Syncing configmap %s in underlying clusters", baseConfigMap.Name)
+	glog.V(3).Infof("Syncing configmap %s in underlying clusters", configMap.Name)
 
 	clusters, err := configmapcontroller.configmapFederatedInformer.GetReadyClusters()
 	if err != nil {
@@ -362,12 +374,12 @@ func (configmapcontroller *ConfigMapController) reconcileConfigMap(configmap typ
 
 		// Do not modify data.
 		desiredConfigMap := &apiv1.ConfigMap{
-			ObjectMeta: util.DeepCopyRelevantObjectMeta(baseConfigMap.ObjectMeta),
-			Data:       baseConfigMap.Data,
+			ObjectMeta: util.DeepCopyRelevantObjectMeta(configMap.ObjectMeta),
+			Data:       configMap.Data,
 		}
 
 		if !found {
-			configmapcontroller.eventRecorder.Eventf(baseConfigMap, api.EventTypeNormal, "CreateInCluster",
+			configmapcontroller.eventRecorder.Eventf(configMap, api.EventTypeNormal, "CreateInCluster",
 				"Creating configmap in cluster %s", cluster.Name)
 
 			operations = append(operations, util.FederatedOperation{
@@ -380,7 +392,7 @@ func (configmapcontroller *ConfigMapController) reconcileConfigMap(configmap typ
 
 			// Update existing configmap, if needed.
 			if !util.ConfigMapEquivalent(desiredConfigMap, clusterConfigMap) {
-				configmapcontroller.eventRecorder.Eventf(baseConfigMap, api.EventTypeNormal, "UpdateInCluster",
+				configmapcontroller.eventRecorder.Eventf(configMap, api.EventTypeNormal, "UpdateInCluster",
 					"Updating configmap in cluster %s", cluster.Name)
 				operations = append(operations, util.FederatedOperation{
 					Type:        util.OperationTypeUpdate,
@@ -398,7 +410,7 @@ func (configmapcontroller *ConfigMapController) reconcileConfigMap(configmap typ
 	}
 	err = configmapcontroller.federatedUpdater.UpdateWithOnError(operations, configmapcontroller.updateTimeout,
 		func(op util.FederatedOperation, operror error) {
-			configmapcontroller.eventRecorder.Eventf(baseConfigMap, api.EventTypeNormal, "UpdateInClusterFailed",
+			configmapcontroller.eventRecorder.Eventf(configMap, api.EventTypeNormal, "UpdateInClusterFailed",
 				"ConfigMap update in cluster %s failed: %v", op.ClusterName, operror)
 		})
 

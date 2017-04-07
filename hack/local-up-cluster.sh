@@ -29,6 +29,7 @@ RUNTIME_CONFIG=${RUNTIME_CONFIG:-""}
 KUBELET_AUTHORIZATION_WEBHOOK=${KUBELET_AUTHORIZATION_WEBHOOK:-""}
 KUBELET_AUTHENTICATION_WEBHOOK=${KUBELET_AUTHENTICATION_WEBHOOK:-""}
 POD_MANIFEST_PATH=${POD_MANIFEST_PATH:-"/var/run/kubernetes/static-pods"}
+KUBELET_FLAGS=${KUBELET_FLAGS:-""}
 # Name of the network plugin, eg: "kubenet"
 NET_PLUGIN=${NET_PLUGIN:-""}
 # Place the binaries required by NET_PLUGIN in this directory, eg: "/home/kubernetes/bin".
@@ -36,10 +37,7 @@ NET_PLUGIN_DIR=${NET_PLUGIN_DIR:-""}
 SERVICE_CLUSTER_IP_RANGE=${SERVICE_CLUSTER_IP_RANGE:-10.0.0.0/24}
 FIRST_SERVICE_CLUSTER_IP=${FIRST_SERVICE_CLUSTER_IP:-10.0.0.1}
 # if enabled, must set CGROUP_ROOT
-CGROUPS_PER_QOS=${CGROUPS_PER_QOS:-false}
-# this is not defaulted to preserve backward compatibility.
-# if EXPERIMENTAL_CGROUPS_PER_QOS is enabled, recommend setting to /
-CGROUP_ROOT=${CGROUP_ROOT:-""}
+CGROUPS_PER_QOS=${CGROUPS_PER_QOS:-true}
 # name of the cgroup driver, i.e. cgroupfs or systemd
 CGROUP_DRIVER=${CGROUP_DRIVER:-""}
 # owner of client certs, default to current user if not specified
@@ -64,6 +62,12 @@ HOSTNAME_OVERRIDE=${HOSTNAME_OVERRIDE:-"127.0.0.1"}
 CLOUD_PROVIDER=${CLOUD_PROVIDER:-""}
 CLOUD_CONFIG=${CLOUD_CONFIG:-""}
 FEATURE_GATES=${FEATURE_GATES:-"AllAlpha=true"}
+STORAGE_BACKEND=${STORAGE_BACKEND:-"etcd3"}
+# enable swagger ui
+ENABLE_SWAGGER_UI=${ENABLE_SWAGGER_UI:-false}
+
+# enable audit log
+ENABLE_APISERVER_BASIC_AUDIT=${ENABLE_APISERVER_BASIC_AUDIT:-false}
 
 # RBAC Mode options
 ALLOW_ANY_TOKEN=${ALLOW_ANY_TOKEN:-false}
@@ -71,10 +75,14 @@ ENABLE_RBAC=${ENABLE_RBAC:-false}
 KUBECONFIG_TOKEN=${KUBECONFIG_TOKEN:-""}
 AUTH_ARGS=${AUTH_ARGS:-""}
 
+# Install a default storage class (enabled by default)
+DEFAULT_STORAGE_CLASS=${KUBE_DEFAULT_STORAGE_CLASS:-true}
+
 # start the cache mutation detector by default so that cache mutators will be found
 KUBE_CACHE_MUTATION_DETECTOR="${KUBE_CACHE_MUTATION_DETECTOR:-true}"
 export KUBE_CACHE_MUTATION_DETECTOR
 
+ADMISSION_CONTROL_CONFIG_FILE=${ADMISSION_CONTROL_CONFIG_FILE:-""}
 
 # START_MODE can be 'all', 'kubeletonly', or 'nokubelet'
 START_MODE=${START_MODE:-"all"}
@@ -147,7 +155,7 @@ do
 done
 
 if [ "x$GO_OUT" == "x" ]; then
-    make -C "${KUBE_ROOT}" WHAT="cmd/kubectl cmd/hyperkube vendor/k8s.io/kube-aggregator"
+    make -C "${KUBE_ROOT}" WHAT="cmd/kubectl cmd/hyperkube"
 else
     echo "skipped the build."
 fi
@@ -182,9 +190,11 @@ KUBELET_HOST=${KUBELET_HOST:-"127.0.0.1"}
 API_CORS_ALLOWED_ORIGINS=${API_CORS_ALLOWED_ORIGINS:-/127.0.0.1(:[0-9]+)?$,/localhost(:[0-9]+)?$}
 KUBELET_PORT=${KUBELET_PORT:-10250}
 LOG_LEVEL=${LOG_LEVEL:-3}
+LOG_DIR=${LOG_DIR:-"/tmp"}
 CONTAINER_RUNTIME=${CONTAINER_RUNTIME:-"docker"}
 CONTAINER_RUNTIME_ENDPOINT=${CONTAINER_RUNTIME_ENDPOINT:-""}
 IMAGE_SERVICE_ENDPOINT=${IMAGE_SERVICE_ENDPOINT:-""}
+ENABLE_CRI=${ENABLE_CRI:-"true"}
 RKT_PATH=${RKT_PATH:-""}
 RKT_STAGE1_IMAGE=${RKT_STAGE1_IMAGE:-""}
 CHAOS_CHANCE=${CHAOS_CHANCE:-0.0}
@@ -370,10 +380,33 @@ function start_apiserver {
     fi
 
     # Admission Controllers to invoke prior to persisting objects in cluster
-    ADMISSION_CONTROL=NamespaceLifecycle,LimitRanger,ServiceAccount${security_admission},ResourceQuota,DefaultStorageClass
+    ADMISSION_CONTROL=NamespaceLifecycle,LimitRanger,ServiceAccount${security_admission},ResourceQuota,DefaultStorageClass,DefaultTolerationSeconds
 
     # This is the default dir and filename where the apiserver will generate a self-signed cert
     # which should be able to be used as the CA to verify itself
+
+    audit_arg=""
+    APISERVER_BASIC_AUDIT_LOG=""
+    if [[ "${ENABLE_APISERVER_BASIC_AUDIT:-}" = true ]]; then
+        # We currently only support enabling with a fixed path and with built-in log
+        # rotation "disabled" (large value) so it behaves like kube-apiserver.log.
+        # External log rotation should be set up the same as for kube-apiserver.log.
+        APISERVER_BASIC_AUDIT_LOG=/tmp/kube-apiserver-audit.log
+        audit_arg=" --audit-log-path=${APISERVER_BASIC_AUDIT_LOG}"
+        audit_arg+=" --audit-log-maxage=0"
+        audit_arg+=" --audit-log-maxbackup=0"
+        # Lumberjack doesn't offer any way to disable size-based rotation. It also
+        # has an in-memory counter that doesn't notice if you truncate the file.
+        # 2000000000 (in MiB) is a large number that fits in 31 bits. If the log
+        # grows at 10MiB/s (~30K QPS), it will rotate after ~6 years if apiserver
+        # never restarts. Please manually restart apiserver before this time.
+        audit_arg+=" --audit-log-maxsize=2000000000"
+    fi
+
+    swagger_arg=""
+    if [[ "${ENABLE_SWAGGER_UI}" = true ]]; then
+      swagger_arg="--enable-swagger-ui=true "
+    fi
 
     anytoken_arg=""
     if [[ "${ALLOW_ANY_TOKEN}" = true ]]; then
@@ -424,8 +457,8 @@ function start_apiserver {
     kube::util::write_client_kubeconfig "${CONTROLPLANE_SUDO}" "${CERT_DIR}" "${ROOT_CA_FILE}" "${API_HOST}" "${API_SECURE_PORT}" kube-aggregator
 
 
-    APISERVER_LOG=/tmp/kube-apiserver.log
-    ${CONTROLPLANE_SUDO} "${GO_OUT}/hyperkube" apiserver ${anytoken_arg} ${authorizer_arg} ${priv_arg} ${runtime_config}\
+    APISERVER_LOG=${LOG_DIR}/kube-apiserver.log
+    ${CONTROLPLANE_SUDO} "${GO_OUT}/hyperkube" apiserver ${swagger_arg} ${audit_arg} ${anytoken_arg} ${authorizer_arg} ${priv_arg} ${runtime_config}\
       ${advertise_address} \
       --v=${LOG_LEVEL} \
       --cert-dir="${CERT_DIR}" \
@@ -433,6 +466,7 @@ function start_apiserver {
       --service-account-key-file="${SERVICE_ACCOUNT_KEY}" \
       --service-account-lookup="${SERVICE_ACCOUNT_LOOKUP}" \
       --admission-control="${ADMISSION_CONTROL}" \
+      --admission-control-config-file="${ADMISSION_CONTROL_CONFIG_FILE}" \
       --bind-address="${API_BIND_ADDR}" \
       --secure-port="${API_SECURE_PORT}" \
       --tls-cert-file="${CERT_DIR}/serving-kube-apiserver.crt" \
@@ -440,6 +474,7 @@ function start_apiserver {
       --tls-ca-file="${CERT_DIR}/server-ca.crt" \
       --insecure-bind-address="${API_HOST_IP}" \
       --insecure-port="${API_PORT}" \
+      --storage-backend=${STORAGE_BACKEND} \
       --etcd-servers="http://${ETCD_HOST}:${ETCD_PORT}" \
       --service-cluster-ip-range="${SERVICE_CLUSTER_IP_RANGE}" \
       --feature-gates="${FEATURE_GATES}" \
@@ -450,6 +485,8 @@ function start_apiserver {
       --requestheader-extra-headers-prefix=X-Remote-Extra- \
       --requestheader-client-ca-file="${CERT_DIR}/request-header-ca.crt" \
       --requestheader-allowed-names=system:auth-proxy \
+      --proxy-client-cert-file="${CERT_DIR}/client-auth-proxy.crt" \
+      --proxy-client-key-file="${CERT_DIR}/client-auth-proxy.key" \
       --cors-allowed-origins="${API_CORS_ALLOWED_ORIGINS}" >"${APISERVER_LOG}" 2>&1 &
     APISERVER_PID=$!
 
@@ -458,7 +495,7 @@ function start_apiserver {
     # this uses the API port because if you don't have any authenticator, you can't seem to use the secure port at all.
     # this matches what happened with the combination in 1.4.
     # TODO change this conditionally based on whether API_PORT is on or off
-    kube::util::wait_for_url "http://${API_HOST_IP}:${API_PORT}/version" "apiserver: " 1 ${WAIT_FOR_URL_API_SERVER} \
+    kube::util::wait_for_url "http://${API_HOST_IP}:${API_SECURE_PORT}/healthz" "apiserver: " 1 ${WAIT_FOR_URL_API_SERVER} \
         || { echo "check apiserver logs: ${APISERVER_LOG}" ; exit 1 ; }
 
     # Create kubeconfigs for all components, using client certs
@@ -483,8 +520,6 @@ function start_apiserver {
         fi
     fi
 
-    # create the kube-public namespace for the aggregator
-    ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" create namespace kube-public
     ${CONTROLPLANE_SUDO} cp "${CERT_DIR}/admin.kubeconfig" "${CERT_DIR}/admin-kube-aggregator.kubeconfig"
     ${CONTROLPLANE_SUDO} chown $(whoami) "${CERT_DIR}/admin-kube-aggregator.kubeconfig"
     ${KUBECTL} config set-cluster local-up-cluster --kubeconfig="${CERT_DIR}/admin-kube-aggregator.kubeconfig" --server="https://${API_HOST_IP}:31090"
@@ -498,7 +533,7 @@ function start_controller_manager {
       node_cidr_args="--allocate-node-cidrs=true --cluster-cidr=10.1.0.0/16 "
     fi
 
-    CTLRMGR_LOG=/tmp/kube-controller-manager.log
+    CTLRMGR_LOG=${LOG_DIR}/kube-controller-manager.log
     ${CONTROLPLANE_SUDO} "${GO_OUT}/hyperkube" controller-manager \
       --v=${LOG_LEVEL} \
       --service-account-private-key-file="${SERVICE_ACCOUNT_KEY}" \
@@ -516,7 +551,7 @@ function start_controller_manager {
 }
 
 function start_kubelet {
-    KUBELET_LOG=/tmp/kubelet.log
+    KUBELET_LOG=${LOG_DIR}/kubelet.log
     mkdir -p ${POD_MANIFEST_PATH} || true
 
     priv_arg=""
@@ -568,6 +603,7 @@ function start_kubelet {
       fi
 
       sudo -E "${GO_OUT}/hyperkube" kubelet ${priv_arg}\
+        --enable-cri="${ENABLE_CRI}" \
         --v=${LOG_LEVEL} \
         --chaos-chance="${CHAOS_CHANCE}" \
         --container-runtime="${CONTAINER_RUNTIME}" \
@@ -584,7 +620,6 @@ function start_kubelet {
         --enable-controller-attach-detach="${ENABLE_CONTROLLER_ATTACH_DETACH}" \
         --cgroups-per-qos=${CGROUPS_PER_QOS} \
         --cgroup-driver=${CGROUP_DRIVER} \
-        --cgroup-root=${CGROUP_ROOT} \
         --keep-terminated-pod-volumes=true \
         --eviction-hard=${EVICTION_HARD} \
         --eviction-soft=${EVICTION_SOFT} \
@@ -596,7 +631,8 @@ function start_kubelet {
         ${net_plugin_args} \
         ${container_runtime_endpoint_args} \
         ${image_service_endpoint_args} \
-        --port="$KUBELET_PORT" >"${KUBELET_LOG}" 2>&1 &
+        --port="$KUBELET_PORT" \
+	${KUBELET_FLAGS} >"${KUBELET_LOG}" 2>&1 &
       KUBELET_PID=$!
       # Quick check that kubelet is running.
       if ps -p $KUBELET_PID > /dev/null ; then 
@@ -643,7 +679,7 @@ function start_kubelet {
 }
 
 function start_kubeproxy {
-    PROXY_LOG=/tmp/kube-proxy.log
+    PROXY_LOG=${LOG_DIR}/kube-proxy.log
     sudo "${GO_OUT}/hyperkube" proxy \
       --v=${LOG_LEVEL} \
       --hostname-override="${HOSTNAME_OVERRIDE}" \
@@ -652,7 +688,7 @@ function start_kubeproxy {
       --master="https://${API_HOST}:${API_SECURE_PORT}" >"${PROXY_LOG}" 2>&1 &
     PROXY_PID=$!
 
-    SCHEDULER_LOG=/tmp/kube-scheduler.log
+    SCHEDULER_LOG=${LOG_DIR}/kube-scheduler.log
     ${CONTROLPLANE_SUDO} "${GO_OUT}/hyperkube" scheduler \
       --v=${LOG_LEVEL} \
       --kubeconfig "$CERT_DIR"/scheduler.kubeconfig \
@@ -664,24 +700,13 @@ function start_kubedns {
     if [[ "${ENABLE_CLUSTER_DNS}" = true ]]; then
         echo "Creating kube-system namespace"
         sed -e "s/{{ pillar\['dns_domain'\] }}/${DNS_DOMAIN}/g" "${KUBE_ROOT}/cluster/addons/dns/kubedns-controller.yaml.in" >| kubedns-deployment.yaml
-        if [[ "${FEDERATION:-}" == "true" ]]; then
-          FEDERATIONS_DOMAIN_MAP="${FEDERATIONS_DOMAIN_MAP:-}"
-          if [[ -z "${FEDERATIONS_DOMAIN_MAP}" && -n "${FEDERATION_NAME:-}" && -n "${DNS_ZONE_NAME:-}" ]]; then
-            FEDERATIONS_DOMAIN_MAP="${FEDERATION_NAME}=${DNS_ZONE_NAME}"
-          fi
-          if [[ -n "${FEDERATIONS_DOMAIN_MAP}" ]]; then
-            sed -i -e "s/{{ pillar\['federations_domain_map'\] }}/- --federations=${FEDERATIONS_DOMAIN_MAP}/g" kubedns-deployment.yaml
-          else
-            sed -i -e "/{{ pillar\['federations_domain_map'\] }}/d" kubedns-deployment.yaml
-          fi
-        else
-          sed -i -e "/{{ pillar\['federations_domain_map'\] }}/d" kubedns-deployment.yaml
-        fi
         sed -e "s/{{ pillar\['dns_server'\] }}/${DNS_SERVER_IP}/g" "${KUBE_ROOT}/cluster/addons/dns/kubedns-svc.yaml.in" >| kubedns-svc.yaml
         
         # TODO update to dns role once we have one.
         ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" create clusterrolebinding system:kube-dns --clusterrole=cluster-admin --serviceaccount=kube-system:default
         # use kubectl to create kubedns deployment and service
+        ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" --namespace=kube-system create -f ${KUBE_ROOT}/cluster/addons/dns/kubedns-sa.yaml
+        ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" --namespace=kube-system create -f ${KUBE_ROOT}/cluster/addons/dns/kubedns-cm.yaml
         ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" --namespace=kube-system create -f kubedns-deployment.yaml
         ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" --namespace=kube-system create -f kubedns-svc.yaml
         echo "Kube-dns deployment and service successfully deployed."
@@ -696,6 +721,21 @@ function create_psp_policy {
     ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" create -f ${KUBE_ROOT}/examples/podsecuritypolicy/rbac/bindings.yaml
 }
 
+function create_storage_class {
+    if [ -z "$CLOUD_PROVIDER" ]; then
+        # No cloud provider -> no default storage class
+        return
+    fi
+
+    CLASS_FILE=${KUBE_ROOT}/cluster/addons/storage-class/${CLOUD_PROVIDER}/default.yaml
+    if [ -e $CLASS_FILE ]; then
+        echo "Create default storage class for $CLOUD_PROVIDER"
+        ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" create -f $CLASS_FILE
+    else
+        echo "No storage class available for $CLOUD_PROVIDER."
+    fi
+}
+
 function print_success {
 if [[ "${START_MODE}" != "kubeletonly" ]]; then
   cat <<EOF
@@ -707,6 +747,10 @@ Logs:
   ${PROXY_LOG:-}
   ${SCHEDULER_LOG:-}
 EOF
+fi
+
+if [[ "${ENABLE_APISERVER_BASIC_AUDIT:-}" = true ]]; then
+  echo "  ${APISERVER_BASIC_AUDIT_LOG}"
 fi
 
 if [[ "${START_MODE}" == "all" ]]; then
@@ -803,6 +847,10 @@ fi
 
 if [[ -n "${PSP_ADMISSION}" && "${ENABLE_RBAC}" = true ]]; then
   create_psp_policy
+fi
+
+if [[ "$DEFAULT_STORAGE_CLASS" = "true" ]]; then
+  create_storage_class
 fi
 
 print_success

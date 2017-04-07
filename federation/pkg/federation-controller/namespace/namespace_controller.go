@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	clientv1 "k8s.io/client-go/pkg/api/v1"
@@ -45,6 +46,11 @@ import (
 
 const (
 	allClustersKey = "ALL_CLUSTERS"
+	ControllerName = "namespaces"
+)
+
+var (
+	RequiredResources = []schema.GroupVersionResource{apiv1.SchemeGroupVersion.WithResource("namespaces")}
 )
 
 type NamespaceController struct {
@@ -163,7 +169,8 @@ func NewNamespaceController(client federationclientset.Interface, dynamicClientP
 		},
 		func(client kubeclientset.Interface, obj runtime.Object) error {
 			namespace := obj.(*apiv1.Namespace)
-			err := client.Core().Namespaces().Delete(namespace.Name, &metav1.DeleteOptions{})
+			orphanDependents := false
+			err := client.Core().Namespaces().Delete(namespace.Name, &metav1.DeleteOptions{OrphanDependents: &orphanDependents})
 			// IsNotFound error is fine since that means the object is deleted already.
 			if errors.IsNotFound(err) {
 				return nil
@@ -204,14 +211,14 @@ func (nc *NamespaceController) hasFinalizerFunc(obj runtime.Object, finalizer st
 	return false
 }
 
-// Removes the finalizer from the given objects ObjectMeta.
+// Removes the finalizers from the given objects ObjectMeta.
 // Assumes that the given object is a namespace.
-func (nc *NamespaceController) removeFinalizerFunc(obj runtime.Object, finalizer string) (runtime.Object, error) {
+func (nc *NamespaceController) removeFinalizerFunc(obj runtime.Object, finalizers []string) (runtime.Object, error) {
 	namespace := obj.(*apiv1.Namespace)
 	newFinalizers := []string{}
 	hasFinalizer := false
 	for i := range namespace.ObjectMeta.Finalizers {
-		if string(namespace.ObjectMeta.Finalizers[i]) != finalizer {
+		if !deletionhelper.ContainsString(finalizers, namespace.ObjectMeta.Finalizers[i]) {
 			newFinalizers = append(newFinalizers, namespace.ObjectMeta.Finalizers[i])
 		} else {
 			hasFinalizer = true
@@ -224,7 +231,7 @@ func (nc *NamespaceController) removeFinalizerFunc(obj runtime.Object, finalizer
 	namespace.ObjectMeta.Finalizers = newFinalizers
 	namespace, err := nc.federatedApiClient.Core().Namespaces().Update(namespace)
 	if err != nil {
-		return nil, fmt.Errorf("failed to remove finalizer %s from namespace %s: %v", finalizer, namespace.Name, err)
+		return nil, fmt.Errorf("failed to remove finalizers %v from namespace %s: %v", finalizers, namespace.Name, err)
 	}
 	return namespace, nil
 }
@@ -359,7 +366,7 @@ func (nc *NamespaceController) reconcileNamespace(namespace string) {
 	if baseNamespace.DeletionTimestamp != nil {
 		if err := nc.delete(baseNamespace); err != nil {
 			glog.Errorf("Failed to delete %s: %v", namespace, err)
-			nc.eventRecorder.Eventf(baseNamespace, api.EventTypeNormal, "DeleteFailed",
+			nc.eventRecorder.Eventf(baseNamespace, api.EventTypeWarning, "DeleteFailed",
 				"Namespace delete failed: %v", err)
 			nc.deliverNamespace(namespace, 0, true)
 		}
@@ -438,7 +445,7 @@ func (nc *NamespaceController) reconcileNamespace(namespace string) {
 	glog.V(2).Infof("Updating namespace %s in underlying clusters. Operations: %d", baseNamespace.Name, len(operations))
 
 	err = nc.federatedUpdater.UpdateWithOnError(operations, nc.updateTimeout, func(op util.FederatedOperation, operror error) {
-		nc.eventRecorder.Eventf(baseNamespace, api.EventTypeNormal, "UpdateInClusterFailed",
+		nc.eventRecorder.Eventf(baseNamespace, api.EventTypeWarning, "UpdateInClusterFailed",
 			"Namespace update in cluster %s failed: %v", op.ClusterName, operror)
 	})
 	if err != nil {
