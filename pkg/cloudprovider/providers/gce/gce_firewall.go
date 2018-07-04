@@ -17,74 +17,49 @@ limitations under the License.
 package gce
 
 import (
-	"k8s.io/kubernetes/pkg/api/v1"
-	netsets "k8s.io/kubernetes/pkg/util/net/sets"
-
 	compute "google.golang.org/api/compute/v1"
+
+	"k8s.io/kubernetes/pkg/cloudprovider/providers/gce/cloud"
+	"k8s.io/kubernetes/pkg/cloudprovider/providers/gce/cloud/meta"
 )
 
-// Firewall management: These methods are just passthrough to the existing
-// internal firewall creation methods used to manage TCPLoadBalancer.
+func newFirewallMetricContext(request string) *metricContext {
+	return newGenericMetricContext("firewall", request, unusedMetricLabel, unusedMetricLabel, computeV1Version)
+}
 
 // GetFirewall returns the Firewall by name.
 func (gce *GCECloud) GetFirewall(name string) (*compute.Firewall, error) {
-	return gce.service.Firewalls.Get(gce.projectID, name).Do()
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newFirewallMetricContext("get")
+	v, err := gce.c.Firewalls().Get(ctx, meta.GlobalKey(name))
+	return v, mc.Observe(err)
 }
 
-// CreateFirewall creates the given firewall rule.
-func (gce *GCECloud) CreateFirewall(name, desc string, sourceRanges netsets.IPNet, ports []int64, hostNames []string) error {
-	region, err := GetGCERegion(gce.localZone)
-	if err != nil {
-		return err
-	}
-	// TODO: This completely breaks modularity in the cloudprovider but the methods
-	// shared with the TCPLoadBalancer take v1.ServicePorts.
-	svcPorts := []v1.ServicePort{}
-	// TODO: Currently the only consumer of this method is the GCE L7
-	// loadbalancer controller, which never needs a protocol other than TCP.
-	// We should pipe through a mapping of port:protocol and default to TCP
-	// if UDP ports are required. This means the method signature will change
-	// forcing downstream clients to refactor interfaces.
-	for _, p := range ports {
-		svcPorts = append(svcPorts, v1.ServicePort{Port: int32(p), Protocol: v1.ProtocolTCP})
-	}
-	hosts, err := gce.getInstancesByNames(hostNames)
-	if err != nil {
-		return err
-	}
-	return gce.createFirewall(name, region, desc, sourceRanges, svcPorts, hosts)
+// CreateFirewall creates the passed firewall
+func (gce *GCECloud) CreateFirewall(f *compute.Firewall) error {
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newFirewallMetricContext("create")
+	return mc.Observe(gce.c.Firewalls().Insert(ctx, meta.GlobalKey(f.Name), f))
 }
 
 // DeleteFirewall deletes the given firewall rule.
 func (gce *GCECloud) DeleteFirewall(name string) error {
-	region, err := GetGCERegion(gce.localZone)
-	if err != nil {
-		return err
-	}
-	return gce.deleteFirewall(name, region)
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newFirewallMetricContext("delete")
+	return mc.Observe(gce.c.Firewalls().Delete(ctx, meta.GlobalKey(name)))
 }
 
-// UpdateFirewall applies the given firewall rule as an update to an existing
-// firewall rule with the same name.
-func (gce *GCECloud) UpdateFirewall(name, desc string, sourceRanges netsets.IPNet, ports []int64, hostNames []string) error {
-	region, err := GetGCERegion(gce.localZone)
-	if err != nil {
-		return err
-	}
-	// TODO: This completely breaks modularity in the cloudprovider but the methods
-	// shared with the TCPLoadBalancer take v1.ServicePorts.
-	svcPorts := []v1.ServicePort{}
-	// TODO: Currently the only consumer of this method is the GCE L7
-	// loadbalancer controller, which never needs a protocol other than TCP.
-	// We should pipe through a mapping of port:protocol and default to TCP
-	// if UDP ports are required. This means the method signature will change,
-	// forcing downstream clients to refactor interfaces.
-	for _, p := range ports {
-		svcPorts = append(svcPorts, v1.ServicePort{Port: int32(p), Protocol: v1.ProtocolTCP})
-	}
-	hosts, err := gce.getInstancesByNames(hostNames)
-	if err != nil {
-		return err
-	}
-	return gce.updateFirewall(name, region, desc, sourceRanges, svcPorts, hosts)
+// UpdateFirewall applies the given firewall as an update to an existing service.
+func (gce *GCECloud) UpdateFirewall(f *compute.Firewall) error {
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newFirewallMetricContext("update")
+	return mc.Observe(gce.c.Firewalls().Update(ctx, meta.GlobalKey(f.Name), f))
 }

@@ -22,48 +22,85 @@ import (
 	"reflect"
 	"testing"
 
+	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/kubernetes/pkg/api"
 )
 
 func TestConfigMapGenerate(t *testing.T) {
 	tests := []struct {
+		name      string
 		setup     func(t *testing.T, params map[string]interface{}) func()
 		params    map[string]interface{}
-		expected  *api.ConfigMap
+		expected  *v1.ConfigMap
 		expectErr bool
 	}{
 		{
+			name: "test1",
 			params: map[string]interface{}{
 				"name": "foo",
 			},
-			expected: &api.ConfigMap{
+			expected: &v1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "foo",
 				},
-				Data: map[string]string{},
+				Data:       map[string]string{},
+				BinaryData: map[string][]byte{},
 			},
 			expectErr: false,
 		},
 		{
+			name: "test2",
+			params: map[string]interface{}{
+				"name":        "foo",
+				"append-hash": true,
+			},
+			expected: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo-867km9574f",
+				},
+				Data:       map[string]string{},
+				BinaryData: map[string][]byte{},
+			},
+			expectErr: false,
+		},
+		{
+			name: "test3",
 			params: map[string]interface{}{
 				"name": "foo",
 				"type": "my-type",
 			},
-			expected: &api.ConfigMap{
+			expected: &v1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "foo",
 				},
-				Data: map[string]string{},
+				Data:       map[string]string{},
+				BinaryData: map[string][]byte{},
 			},
 			expectErr: false,
 		},
 		{
+			name: "test4",
+			params: map[string]interface{}{
+				"name":        "foo",
+				"type":        "my-type",
+				"append-hash": true,
+			},
+			expected: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo-867km9574f",
+				},
+				Data:       map[string]string{},
+				BinaryData: map[string][]byte{},
+			},
+			expectErr: false,
+		},
+		{
+			name: "test5",
 			params: map[string]interface{}{
 				"name":         "foo",
 				"from-literal": []string{"key1=value1", "key2=value2"},
 			},
-			expected: &api.ConfigMap{
+			expected: &v1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "foo",
 				},
@@ -71,10 +108,31 @@ func TestConfigMapGenerate(t *testing.T) {
 					"key1": "value1",
 					"key2": "value2",
 				},
+				BinaryData: map[string][]byte{},
 			},
 			expectErr: false,
 		},
 		{
+			name: "test6",
+			params: map[string]interface{}{
+				"name":         "foo",
+				"from-literal": []string{"key1=value1", "key2=value2"},
+				"append-hash":  true,
+			},
+			expected: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo-gcb75dd9gb",
+				},
+				Data: map[string]string{
+					"key1": "value1",
+					"key2": "value2",
+				},
+				BinaryData: map[string][]byte{},
+			},
+			expectErr: false,
+		},
+		{
+			name: "test7",
 			params: map[string]interface{}{
 				"name":         "foo",
 				"from-literal": []string{"key1value1"},
@@ -82,6 +140,7 @@ func TestConfigMapGenerate(t *testing.T) {
 			expectErr: true,
 		},
 		{
+			name: "test8",
 			params: map[string]interface{}{
 				"name":      "foo",
 				"from-file": []string{"key1=/file=2"},
@@ -89,6 +148,7 @@ func TestConfigMapGenerate(t *testing.T) {
 			expectErr: true,
 		},
 		{
+			name: "test9",
 			params: map[string]interface{}{
 				"name":      "foo",
 				"from-file": []string{"key1==value"},
@@ -96,27 +156,80 @@ func TestConfigMapGenerate(t *testing.T) {
 			expectErr: true,
 		},
 		{
+			name:  "test10",
+			setup: setupBinaryFile([]byte{0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x77, 0x6f, 0x72, 0x6c, 0x64}),
+			params: map[string]interface{}{
+				"name":      "foo",
+				"from-file": []string{"foo1"},
+			},
+			expected: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo",
+				},
+				Data:       map[string]string{"foo1": "hello world"},
+				BinaryData: map[string][]byte{},
+			},
+			expectErr: false,
+		},
+		{
+			name:  "test11",
+			setup: setupBinaryFile([]byte{0xff, 0xfd}),
+			params: map[string]interface{}{
+				"name":      "foo",
+				"from-file": []string{"foo1"},
+			},
+			expected: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo",
+				},
+				Data:       map[string]string{},
+				BinaryData: map[string][]byte{"foo1": {0xff, 0xfd}},
+			},
+			expectErr: false,
+		},
+		{
+			name: "test12",
 			params: map[string]interface{}{
 				"name":         "foo",
 				"from-literal": []string{"key1==value1"},
 			},
-			expected: &api.ConfigMap{
+			expected: &v1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "foo",
 				},
 				Data: map[string]string{
 					"key1": "=value1",
 				},
+				BinaryData: map[string][]byte{},
 			},
 			expectErr: false,
 		},
 		{
+			name: "test13",
+			params: map[string]interface{}{
+				"name":         "foo",
+				"from-literal": []string{"key1==value1"},
+				"append-hash":  true,
+			},
+			expected: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo-bdgk9ttt7m",
+				},
+				Data: map[string]string{
+					"key1": "=value1",
+				},
+				BinaryData: map[string][]byte{},
+			},
+			expectErr: false,
+		},
+		{
+			name:  "test14",
 			setup: setupEnvFile("key1=value1", "#", "", "key2=value2"),
 			params: map[string]interface{}{
 				"name":          "valid_env",
 				"from-env-file": "file.env",
 			},
-			expected: &api.ConfigMap{
+			expected: &v1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "valid_env",
 				},
@@ -124,10 +237,32 @@ func TestConfigMapGenerate(t *testing.T) {
 					"key1": "value1",
 					"key2": "value2",
 				},
+				BinaryData: map[string][]byte{},
 			},
 			expectErr: false,
 		},
 		{
+			name:  "test15",
+			setup: setupEnvFile("key1=value1", "#", "", "key2=value2"),
+			params: map[string]interface{}{
+				"name":          "valid_env",
+				"from-env-file": "file.env",
+				"append-hash":   true,
+			},
+			expected: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "valid_env-2cgh8552ch",
+				},
+				Data: map[string]string{
+					"key1": "value1",
+					"key2": "value2",
+				},
+				BinaryData: map[string][]byte{},
+			},
+			expectErr: false,
+		},
+		{
+			name: "test16",
 			setup: func() func(t *testing.T, params map[string]interface{}) func() {
 				os.Setenv("g_key1", "1")
 				os.Setenv("g_key2", "2")
@@ -137,7 +272,7 @@ func TestConfigMapGenerate(t *testing.T) {
 				"name":          "getenv",
 				"from-env-file": "file.env",
 			},
-			expected: &api.ConfigMap{
+			expected: &v1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "getenv",
 				},
@@ -145,10 +280,36 @@ func TestConfigMapGenerate(t *testing.T) {
 					"g_key1": "1",
 					"g_key2": "",
 				},
+				BinaryData: map[string][]byte{},
 			},
 			expectErr: false,
 		},
 		{
+			name: "test17",
+			setup: func() func(t *testing.T, params map[string]interface{}) func() {
+				os.Setenv("g_key1", "1")
+				os.Setenv("g_key2", "2")
+				return setupEnvFile("g_key1", "g_key2=")
+			}(),
+			params: map[string]interface{}{
+				"name":          "getenv",
+				"from-env-file": "file.env",
+				"append-hash":   true,
+			},
+			expected: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "getenv-b4hh92hgdk",
+				},
+				Data: map[string]string{
+					"g_key1": "1",
+					"g_key2": "",
+				},
+				BinaryData: map[string][]byte{},
+			},
+			expectErr: false,
+		},
+		{
+			name: "test18",
 			params: map[string]interface{}{
 				"name":          "too_many_args",
 				"from-literal":  []string{"key1=value1"},
@@ -156,8 +317,8 @@ func TestConfigMapGenerate(t *testing.T) {
 			},
 			expectErr: true,
 		},
-		{
-			setup: setupEnvFile("key.1=value1"),
+		{name: "test19",
+			setup: setupEnvFile("key#1=value1"),
 			params: map[string]interface{}{
 				"name":          "invalid_key",
 				"from-env-file": "file.env",
@@ -165,39 +326,62 @@ func TestConfigMapGenerate(t *testing.T) {
 			expectErr: true,
 		},
 		{
+			name:  "test20",
 			setup: setupEnvFile("  key1=  value1"),
 			params: map[string]interface{}{
 				"name":          "with_spaces",
 				"from-env-file": "file.env",
 			},
-			expected: &api.ConfigMap{
+			expected: &v1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "with_spaces",
 				},
 				Data: map[string]string{
 					"key1": "  value1",
 				},
+				BinaryData: map[string][]byte{},
+			},
+			expectErr: false,
+		},
+		{
+			name:  "test21",
+			setup: setupEnvFile("  key1=  value1"),
+			params: map[string]interface{}{
+				"name":          "with_spaces",
+				"from-env-file": "file.env",
+				"append-hash":   true,
+			},
+			expected: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "with_spaces-bfc558b4ct",
+				},
+				Data: map[string]string{
+					"key1": "  value1",
+				},
+				BinaryData: map[string][]byte{},
 			},
 			expectErr: false,
 		},
 	}
 	generator := ConfigMapGeneratorV1{}
-	for _, test := range tests {
-		if test.setup != nil {
-			if teardown := test.setup(t, test.params); teardown != nil {
-				defer teardown()
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setup != nil {
+				if teardown := tt.setup(t, tt.params); teardown != nil {
+					defer teardown()
+				}
 			}
-		}
-		obj, err := generator.Generate(test.params)
-		if !test.expectErr && err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if test.expectErr && err != nil {
-			continue
-		}
-		if !reflect.DeepEqual(obj.(*api.ConfigMap), test.expected) {
-			t.Errorf("\nexpected:\n%#v\nsaw:\n%#v", test.expected, obj.(*api.ConfigMap))
-		}
+			obj, err := generator.Generate(tt.params)
+			if !tt.expectErr && err != nil {
+				t.Errorf("case %d, unexpected error: %v", i, err)
+			}
+			if tt.expectErr && err != nil {
+				return
+			}
+			if !reflect.DeepEqual(obj.(*v1.ConfigMap), tt.expected) {
+				t.Errorf("\ncase %d, expected:\n%#v\nsaw:\n%#v", i, tt.expected, obj.(*v1.ConfigMap))
+			}
+		})
 	}
 }
 
@@ -215,6 +399,18 @@ func setupEnvFile(lines ...string) func(*testing.T, map[string]interface{}) func
 		params["from-env-file"] = f.Name()
 		return func() {
 			os.Remove(f.Name())
+		}
+	}
+}
+
+func setupBinaryFile(data []byte) func(*testing.T, map[string]interface{}) func() {
+	return func(t *testing.T, params map[string]interface{}) func() {
+		tmp, _ := ioutil.TempDir("", "")
+		f := tmp + "/foo1"
+		ioutil.WriteFile(f, data, 0644)
+		params["from-file"] = []string{f}
+		return func() {
+			os.Remove(f)
 		}
 	}
 }

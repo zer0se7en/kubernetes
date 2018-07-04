@@ -17,9 +17,13 @@ limitations under the License.
 package etcd
 
 import (
+	"context"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/registry/generic"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
+	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/kube-aggregator/pkg/apis/apiregistration"
 	"k8s.io/kube-aggregator/pkg/registry/apiservice"
 )
@@ -33,15 +37,10 @@ type REST struct {
 func NewREST(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter) *REST {
 	strategy := apiservice.NewStrategy(scheme)
 	store := &genericregistry.Store{
-		Copier:      scheme,
-		NewFunc:     func() runtime.Object { return &apiregistration.APIService{} },
-		NewListFunc: func() runtime.Object { return &apiregistration.APIServiceList{} },
-		ObjectNameFunc: func(obj runtime.Object) (string, error) {
-			return obj.(*apiregistration.APIService).Name, nil
-		},
-		PredicateFunc:     apiservice.MatchAPIService,
-		QualifiedResource: apiregistration.Resource("apiservices"),
-		WatchCacheSize:    100,
+		NewFunc:                  func() runtime.Object { return &apiregistration.APIService{} },
+		NewListFunc:              func() runtime.Object { return &apiregistration.APIServiceList{} },
+		PredicateFunc:            apiservice.MatchAPIService,
+		DefaultQualifiedResource: apiregistration.Resource("apiservices"),
 
 		CreateStrategy: strategy,
 		UpdateStrategy: strategy,
@@ -52,4 +51,36 @@ func NewREST(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter) *REST
 		panic(err) // TODO: Propagate error up
 	}
 	return &REST{store}
+}
+
+// NewStatusREST makes a RESTStorage for status that has more limited options.
+// It is based on the original REST so that we can share the same underlying store
+func NewStatusREST(scheme *runtime.Scheme, rest *REST) *StatusREST {
+	statusStore := *rest.Store
+	statusStore.CreateStrategy = nil
+	statusStore.DeleteStrategy = nil
+	statusStore.UpdateStrategy = apiservice.NewStatusStrategy(scheme)
+	return &StatusREST{store: &statusStore}
+}
+
+type StatusREST struct {
+	store *genericregistry.Store
+}
+
+var _ = rest.Patcher(&StatusREST{})
+
+func (r *StatusREST) New() runtime.Object {
+	return &apiregistration.APIService{}
+}
+
+// Get retrieves the object from the storage. It is required to support Patch.
+func (r *StatusREST) Get(ctx context.Context, name string, options *metav1.GetOptions) (runtime.Object, error) {
+	return r.store.Get(ctx, name, options)
+}
+
+// Update alters the status subset of an object.
+func (r *StatusREST) Update(ctx context.Context, name string, objInfo rest.UpdatedObjectInfo, createValidation rest.ValidateObjectFunc, updateValidation rest.ValidateObjectUpdateFunc, forceAllowCreate bool) (runtime.Object, bool, error) {
+	// We are explicitly setting forceAllowCreate to false in the call to the underlying storage because
+	// subresources should never allow create on update.
+	return r.store.Update(ctx, name, objInfo, createValidation, updateValidation, false)
 }

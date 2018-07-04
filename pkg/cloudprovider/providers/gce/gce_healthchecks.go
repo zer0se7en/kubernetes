@@ -16,124 +16,277 @@ limitations under the License.
 
 package gce
 
-import compute "google.golang.org/api/compute/v1"
+import (
+	"github.com/golang/glog"
 
-// Legacy HTTP Health Checks
+	computealpha "google.golang.org/api/compute/v0.alpha"
+	computebeta "google.golang.org/api/compute/v0.beta"
+	compute "google.golang.org/api/compute/v1"
+
+	"k8s.io/api/core/v1"
+	"k8s.io/kubernetes/pkg/cloudprovider/providers/gce/cloud"
+	"k8s.io/kubernetes/pkg/cloudprovider/providers/gce/cloud/filter"
+	"k8s.io/kubernetes/pkg/cloudprovider/providers/gce/cloud/meta"
+	"k8s.io/kubernetes/pkg/master/ports"
+	utilversion "k8s.io/kubernetes/pkg/util/version"
+)
+
+const (
+	nodesHealthCheckPath   = "/healthz"
+	lbNodesHealthCheckPort = ports.ProxyHealthzPort
+)
+
+var (
+	minNodesHealthCheckVersion *utilversion.Version
+)
+
+func init() {
+	if v, err := utilversion.ParseGeneric("1.7.2"); err != nil {
+		glog.Fatalf("Failed to parse version for minNodesHealthCheckVersion: %v", err)
+	} else {
+		minNodesHealthCheckVersion = v
+	}
+}
+
+func newHealthcheckMetricContext(request string) *metricContext {
+	return newHealthcheckMetricContextWithVersion(request, computeV1Version)
+}
+
+func newHealthcheckMetricContextWithVersion(request, version string) *metricContext {
+	return newGenericMetricContext("healthcheck", request, unusedMetricLabel, unusedMetricLabel, version)
+}
 
 // GetHttpHealthCheck returns the given HttpHealthCheck by name.
 func (gce *GCECloud) GetHttpHealthCheck(name string) (*compute.HttpHealthCheck, error) {
-	return gce.service.HttpHealthChecks.Get(gce.projectID, name).Do()
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("get_legacy")
+	v, err := gce.c.HttpHealthChecks().Get(ctx, meta.GlobalKey(name))
+	return v, mc.Observe(err)
 }
 
 // UpdateHttpHealthCheck applies the given HttpHealthCheck as an update.
 func (gce *GCECloud) UpdateHttpHealthCheck(hc *compute.HttpHealthCheck) error {
-	op, err := gce.service.HttpHealthChecks.Update(gce.projectID, hc.Name, hc).Do()
-	if err != nil {
-		return err
-	}
-	return gce.waitForGlobalOp(op)
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("update_legacy")
+	return mc.Observe(gce.c.HttpHealthChecks().Update(ctx, meta.GlobalKey(hc.Name), hc))
 }
 
 // DeleteHttpHealthCheck deletes the given HttpHealthCheck by name.
 func (gce *GCECloud) DeleteHttpHealthCheck(name string) error {
-	op, err := gce.service.HttpHealthChecks.Delete(gce.projectID, name).Do()
-	if err != nil {
-		return err
-	}
-	return gce.waitForGlobalOp(op)
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("delete_legacy")
+	return mc.Observe(gce.c.HttpHealthChecks().Delete(ctx, meta.GlobalKey(name)))
 }
 
 // CreateHttpHealthCheck creates the given HttpHealthCheck.
 func (gce *GCECloud) CreateHttpHealthCheck(hc *compute.HttpHealthCheck) error {
-	op, err := gce.service.HttpHealthChecks.Insert(gce.projectID, hc).Do()
-	if err != nil {
-		return err
-	}
-	return gce.waitForGlobalOp(op)
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("create_legacy")
+	return mc.Observe(gce.c.HttpHealthChecks().Insert(ctx, meta.GlobalKey(hc.Name), hc))
 }
 
 // ListHttpHealthChecks lists all HttpHealthChecks in the project.
-func (gce *GCECloud) ListHttpHealthChecks() (*compute.HttpHealthCheckList, error) {
-	// TODO: use PageToken to list all not just the first 500
-	return gce.service.HttpHealthChecks.List(gce.projectID).Do()
+func (gce *GCECloud) ListHttpHealthChecks() ([]*compute.HttpHealthCheck, error) {
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("list_legacy")
+	v, err := gce.c.HttpHealthChecks().List(ctx, filter.None)
+	return v, mc.Observe(err)
 }
 
 // Legacy HTTPS Health Checks
 
 // GetHttpsHealthCheck returns the given HttpsHealthCheck by name.
 func (gce *GCECloud) GetHttpsHealthCheck(name string) (*compute.HttpsHealthCheck, error) {
-	return gce.service.HttpsHealthChecks.Get(gce.projectID, name).Do()
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("get_legacy")
+	v, err := gce.c.HttpsHealthChecks().Get(ctx, meta.GlobalKey(name))
+	return v, mc.Observe(err)
 }
 
 // UpdateHttpsHealthCheck applies the given HttpsHealthCheck as an update.
 func (gce *GCECloud) UpdateHttpsHealthCheck(hc *compute.HttpsHealthCheck) error {
-	op, err := gce.service.HttpsHealthChecks.Update(gce.projectID, hc.Name, hc).Do()
-	if err != nil {
-		return err
-	}
-	return gce.waitForGlobalOp(op)
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("update_legacy")
+	return mc.Observe(gce.c.HttpsHealthChecks().Update(ctx, meta.GlobalKey(hc.Name), hc))
 }
 
 // DeleteHttpsHealthCheck deletes the given HttpsHealthCheck by name.
 func (gce *GCECloud) DeleteHttpsHealthCheck(name string) error {
-	op, err := gce.service.HttpsHealthChecks.Delete(gce.projectID, name).Do()
-	if err != nil {
-		return err
-	}
-	return gce.waitForGlobalOp(op)
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("delete_legacy")
+	return mc.Observe(gce.c.HttpsHealthChecks().Delete(ctx, meta.GlobalKey(name)))
 }
 
 // CreateHttpsHealthCheck creates the given HttpsHealthCheck.
 func (gce *GCECloud) CreateHttpsHealthCheck(hc *compute.HttpsHealthCheck) error {
-	op, err := gce.service.HttpsHealthChecks.Insert(gce.projectID, hc).Do()
-	if err != nil {
-		return err
-	}
-	return gce.waitForGlobalOp(op)
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("create_legacy")
+	return mc.Observe(gce.c.HttpsHealthChecks().Insert(ctx, meta.GlobalKey(hc.Name), hc))
 }
 
 // ListHttpsHealthChecks lists all HttpsHealthChecks in the project.
-func (gce *GCECloud) ListHttpsHealthChecks() (*compute.HttpsHealthCheckList, error) {
-	// TODO: use PageToken to list all not just the first 500
-	return gce.service.HttpsHealthChecks.List(gce.projectID).Do()
+func (gce *GCECloud) ListHttpsHealthChecks() ([]*compute.HttpsHealthCheck, error) {
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("list_legacy")
+	v, err := gce.c.HttpsHealthChecks().List(ctx, filter.None)
+	return v, mc.Observe(err)
 }
 
 // Generic HealthCheck
 
 // GetHealthCheck returns the given HealthCheck by name.
 func (gce *GCECloud) GetHealthCheck(name string) (*compute.HealthCheck, error) {
-	return gce.service.HealthChecks.Get(gce.projectID, name).Do()
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("get")
+	v, err := gce.c.HealthChecks().Get(ctx, meta.GlobalKey(name))
+	return v, mc.Observe(err)
+}
+
+// GetAlphaHealthCheck returns the given alpha HealthCheck by name.
+func (gce *GCECloud) GetAlphaHealthCheck(name string) (*computealpha.HealthCheck, error) {
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContextWithVersion("get", computeAlphaVersion)
+	v, err := gce.c.AlphaHealthChecks().Get(ctx, meta.GlobalKey(name))
+	return v, mc.Observe(err)
+}
+
+// GetBetaHealthCheck returns the given beta HealthCheck by name.
+func (gce *GCECloud) GetBetaHealthCheck(name string) (*computebeta.HealthCheck, error) {
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContextWithVersion("get", computeBetaVersion)
+	v, err := gce.c.BetaHealthChecks().Get(ctx, meta.GlobalKey(name))
+	return v, mc.Observe(err)
 }
 
 // UpdateHealthCheck applies the given HealthCheck as an update.
 func (gce *GCECloud) UpdateHealthCheck(hc *compute.HealthCheck) error {
-	op, err := gce.service.HealthChecks.Update(gce.projectID, hc.Name, hc).Do()
-	if err != nil {
-		return err
-	}
-	return gce.waitForGlobalOp(op)
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("update")
+	return mc.Observe(gce.c.HealthChecks().Update(ctx, meta.GlobalKey(hc.Name), hc))
+}
+
+// UpdateAlphaHealthCheck applies the given alpha HealthCheck as an update.
+func (gce *GCECloud) UpdateAlphaHealthCheck(hc *computealpha.HealthCheck) error {
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContextWithVersion("update", computeAlphaVersion)
+	return mc.Observe(gce.c.AlphaHealthChecks().Update(ctx, meta.GlobalKey(hc.Name), hc))
+}
+
+// UpdateBetaHealthCheck applies the given beta HealthCheck as an update.
+func (gce *GCECloud) UpdateBetaHealthCheck(hc *computebeta.HealthCheck) error {
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContextWithVersion("update", computeBetaVersion)
+	return mc.Observe(gce.c.BetaHealthChecks().Update(ctx, meta.GlobalKey(hc.Name), hc))
 }
 
 // DeleteHealthCheck deletes the given HealthCheck by name.
 func (gce *GCECloud) DeleteHealthCheck(name string) error {
-	op, err := gce.service.HealthChecks.Delete(gce.projectID, name).Do()
-	if err != nil {
-		return err
-	}
-	return gce.waitForGlobalOp(op)
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("delete")
+	return mc.Observe(gce.c.HealthChecks().Delete(ctx, meta.GlobalKey(name)))
 }
 
 // CreateHealthCheck creates the given HealthCheck.
 func (gce *GCECloud) CreateHealthCheck(hc *compute.HealthCheck) error {
-	op, err := gce.service.HealthChecks.Insert(gce.projectID, hc).Do()
-	if err != nil {
-		return err
-	}
-	return gce.waitForGlobalOp(op)
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("create")
+	return mc.Observe(gce.c.HealthChecks().Insert(ctx, meta.GlobalKey(hc.Name), hc))
+}
+
+// CreateAlphaHealthCheck creates the given alpha HealthCheck.
+func (gce *GCECloud) CreateAlphaHealthCheck(hc *computealpha.HealthCheck) error {
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContextWithVersion("create", computeAlphaVersion)
+	return mc.Observe(gce.c.AlphaHealthChecks().Insert(ctx, meta.GlobalKey(hc.Name), hc))
+}
+
+// CreateBetaHealthCheck creates the given beta HealthCheck.
+func (gce *GCECloud) CreateBetaHealthCheck(hc *computebeta.HealthCheck) error {
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContextWithVersion("create", computeBetaVersion)
+	return mc.Observe(gce.c.BetaHealthChecks().Insert(ctx, meta.GlobalKey(hc.Name), hc))
 }
 
 // ListHealthChecks lists all HealthCheck in the project.
-func (gce *GCECloud) ListHealthChecks() (*compute.HealthCheckList, error) {
-	// TODO: use PageToken to list all not just the first 500
-	return gce.service.HealthChecks.List(gce.projectID).Do()
+func (gce *GCECloud) ListHealthChecks() ([]*compute.HealthCheck, error) {
+	ctx, cancel := cloud.ContextWithCallTimeout()
+	defer cancel()
+
+	mc := newHealthcheckMetricContext("list")
+	v, err := gce.c.HealthChecks().List(ctx, filter.None)
+	return v, mc.Observe(err)
+}
+
+// GetNodesHealthCheckPort returns the health check port used by the GCE load
+// balancers (l4) for performing health checks on nodes.
+func GetNodesHealthCheckPort() int32 {
+	return lbNodesHealthCheckPort
+}
+
+// GetNodesHealthCheckPath returns the health check path used by the GCE load
+// balancers (l4) for performing health checks on nodes.
+func GetNodesHealthCheckPath() string {
+	return nodesHealthCheckPath
+}
+
+// isAtLeastMinNodesHealthCheckVersion checks if a version is higher than
+// `minNodesHealthCheckVersion`.
+func isAtLeastMinNodesHealthCheckVersion(vstring string) bool {
+	version, err := utilversion.ParseGeneric(vstring)
+	if err != nil {
+		glog.Errorf("vstring (%s) is not a valid version string: %v", vstring, err)
+		return false
+	}
+	return version.AtLeast(minNodesHealthCheckVersion)
+}
+
+// supportsNodesHealthCheck returns false if anyone of the nodes has version
+// lower than `minNodesHealthCheckVersion`.
+func supportsNodesHealthCheck(nodes []*v1.Node) bool {
+	for _, node := range nodes {
+		if !isAtLeastMinNodesHealthCheckVersion(node.Status.NodeInfo.KubeProxyVersion) {
+			return false
+		}
+	}
+	return true
 }

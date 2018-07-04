@@ -1,6 +1,8 @@
 
 ## On Pull Requests
 
+- Please make sure to read our [contributing guide](/.github/CONTRIBUTING.md).
+
 - Before you start a PR there needs to be a Github issue and a discussion about it
   on that issue with a core contributor, even if it's just a 'SGTM'.
 
@@ -20,6 +22,12 @@
 - A PR that is in-progress should have `[wip]` in front of the PR's title. When
   ready for review, remove the `[wip]` and ping a core contributor with an `@`.
 
+- Forcing PRs to be small can have the effect of users submitting PRs in a hierarchical chain, with
+  one depending on the next. If a PR depends on another one, it should have a [Pending #PRNUM]
+  prefix in the PR title. In addition, it will be the PR submitter's responsibility to remove the
+  [Pending #PRNUM] tag once the PR has been updated with the merged, dependent PR. That will
+  let reviewers know it is ready to review.
+
 - A PR should be small. Even if you intend on implementing an entire
   service, a PR should only be one route of that service
   (e.g. create server or get server, but not both).
@@ -27,6 +35,9 @@
 - Unless explicitly asked, do not squash commits in the middle of a review; only
   append. It makes it difficult for the reviewer to see what's changed from one
   review to the next.
+
+- See [#583](https://github.com/gophercloud/gophercloud/issues/583) as an example of a
+  well-formatted issue which contains all relevant information we need to review and approve.
 
 ## On Code
 
@@ -51,7 +62,7 @@
 
 ### Naming
 
-- For methods on a type in `response.go`, the receiver should be named `r` and the
+- For methods on a type in `results.go`, the receiver should be named `r` and the
   variable into which it will be unmarshalled `s`.
 
 - Functions in `requests.go`, with the exception of functions that return a
