@@ -337,17 +337,7 @@ func (gb *GraphBuilder) Run(stopCh <-chan struct{}) {
 }
 
 var ignoredResources = map[schema.GroupResource]struct{}{
-	{Group: "extensions", Resource: "replicationcontrollers"}:              {},
-	{Group: "", Resource: "bindings"}:                                      {},
-	{Group: "", Resource: "componentstatuses"}:                             {},
-	{Group: "", Resource: "events"}:                                        {},
-	{Group: "authentication.k8s.io", Resource: "tokenreviews"}:             {},
-	{Group: "authorization.k8s.io", Resource: "subjectaccessreviews"}:      {},
-	{Group: "authorization.k8s.io", Resource: "selfsubjectaccessreviews"}:  {},
-	{Group: "authorization.k8s.io", Resource: "localsubjectaccessreviews"}: {},
-	{Group: "authorization.k8s.io", Resource: "selfsubjectrulesreviews"}:   {},
-	{Group: "apiregistration.k8s.io", Resource: "apiservices"}:             {},
-	{Group: "apiextensions.k8s.io", Resource: "customresourcedefinitions"}: {},
+	{Group: "", Resource: "events"}: {},
 }
 
 // DefaultIgnoredResources returns the default set of resources that the garbage collector controller
@@ -586,7 +576,7 @@ func (gb *GraphBuilder) processGraphChanges() bool {
 		return true
 	}
 	glog.V(5).Infof("GraphBuilder process object: %s/%s, namespace %s, name %s, uid %s, event type %v", event.gvk.GroupVersion().String(), event.gvk.Kind, accessor.GetNamespace(), accessor.GetName(), string(accessor.GetUID()), event.eventType)
-	// Check if the node already exsits
+	// Check if the node already exists
 	existingNode, found := gb.uidToNode.Read(accessor.GetUID())
 	if found {
 		// this marks the node as having been observed via an informer event

@@ -38,11 +38,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/system"
 	nodeutil "k8s.io/kubernetes/pkg/api/v1/node"
 	commontest "k8s.io/kubernetes/test/e2e/common"
 	"k8s.io/kubernetes/test/e2e/framework"
 	"k8s.io/kubernetes/test/e2e_node/services"
-	"k8s.io/kubernetes/test/e2e_node/system"
 
 	"github.com/golang/glog"
 	"github.com/kardianos/osext"
@@ -71,9 +71,11 @@ func init() {
 	// It seems that someone is using flag.Parse() after init() and TestMain().
 	// TODO(random-liu): Find who is using flag.Parse() and cause errors and move the following logic
 	// into TestContext.
+	// TODO(pohly): remove RegisterNodeFlags from test_context.go enable Viper config support here?
 }
 
 func TestMain(m *testing.M) {
+	rand.Seed(time.Now().UnixNano())
 	pflag.Parse()
 	framework.AfterReadingAllFlags(&framework.TestContext)
 	os.Exit(m.Run())
@@ -86,7 +88,7 @@ const rootfs = "/rootfs"
 func TestE2eNode(t *testing.T) {
 	if *runServicesMode {
 		// If run-services-mode is specified, only run services in current process.
-		services.RunE2EServices()
+		services.RunE2EServices(t)
 		return
 	}
 	if *runKubeletMode {
@@ -119,7 +121,6 @@ func TestE2eNode(t *testing.T) {
 		return
 	}
 	// If run-services-mode is not specified, run test.
-	rand.Seed(time.Now().UTC().UnixNano())
 	RegisterFailHandler(Fail)
 	reporters := []Reporter{}
 	reportDir := framework.TestContext.ReportDir

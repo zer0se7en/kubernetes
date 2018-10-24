@@ -288,23 +288,52 @@ func (c *glusterfsUnmounter) TearDownAt(dir string) error {
 
 func (b *glusterfsMounter) setUpAtInternal(dir string) error {
 	var errs error
-
 	options := []string{}
+	hasLogFile := false
+	hasLogLevel := false
+	log := ""
+
 	if b.readOnly {
 		options = append(options, "ro")
+
 	}
 
-	p := path.Join(b.glusterfs.plugin.host.GetPluginDir(glusterfsPluginName), b.glusterfs.volName)
-	if err := os.MkdirAll(p, 0750); err != nil {
-		return fmt.Errorf("failed to create directory %v: %v", p, err)
+	// Check for log-file,log-level options existence in user supplied mount options, if provided, use those.
+	for _, userOpt := range b.mountOptions {
+
+		switch {
+		case dstrings.HasPrefix(userOpt, "log-file"):
+			glog.V(4).Infof("log-file mount option has provided")
+			hasLogFile = true
+
+		case dstrings.HasPrefix(userOpt, "log-level"):
+			glog.V(4).Infof("log-level mount option has provided")
+			hasLogLevel = true
+		}
+
 	}
 
-	// adding log-level ERROR to remove noise
-	// and more specific log path so each pod has
-	// its own log based on PV + Pod
-	log := path.Join(p, b.pod.Name+"-glusterfs.log")
-	options = append(options, "log-level=ERROR")
-	options = append(options, "log-file="+log)
+	// If logfile has not been provided, create driver specific log file.
+	if !hasLogFile {
+		log = ""
+		p := path.Join(b.glusterfs.plugin.host.GetPluginDir(glusterfsPluginName), b.glusterfs.volName)
+		if err := os.MkdirAll(p, 0750); err != nil {
+			return fmt.Errorf("failed to create directory %v: %v", p, err)
+		}
+
+		// adding log-level ERROR to remove noise
+		// and more specific log path so each pod has
+		// its own log based on PV + Pod
+		log = path.Join(p, b.pod.Name+"-glusterfs.log")
+
+		// Use derived log file in gluster fuse mount
+		options = append(options, "log-file="+log)
+
+	}
+
+	if !hasLogLevel {
+		options = append(options, "log-level=ERROR")
+	}
 
 	var addrlist []string
 	if b.hosts == nil {
@@ -322,7 +351,11 @@ func (b *glusterfsMounter) setUpAtInternal(dir string) error {
 		}
 
 	}
+
+	//Add backup-volfile-servers and auto_unmount options.
 	options = append(options, "backup-volfile-servers="+dstrings.Join(addrlist[:], ":"))
+	options = append(options, "auto_unmount")
+
 	mountOptions := volutil.JoinMountOptions(b.mountOptions, options)
 
 	// with `backup-volfile-servers` mount option in place, it is not required to
@@ -686,8 +719,6 @@ func (p *glusterfsVolumeProvisioner) Provision(selectedNode *v1.Node, allowedTop
 	}
 	p.provisionerConfig = *cfg
 
-	glog.V(4).Infof("creating volume with configuration %+v", p.provisionerConfig)
-
 	gidTable, err := p.plugin.getGidTable(scName, cfg.gidMin, cfg.gidMax)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get gidTable: %v", err)
@@ -719,6 +750,7 @@ func (p *glusterfsVolumeProvisioner) Provision(selectedNode *v1.Node, allowedTop
 	if len(pv.Spec.AccessModes) == 0 {
 		pv.Spec.AccessModes = p.plugin.GetAccessModes()
 	}
+
 	pv.Spec.MountOptions = p.options.MountOptions
 
 	gidStr := strconv.FormatInt(int64(gid), 10)
@@ -728,7 +760,6 @@ func (p *glusterfsVolumeProvisioner) Provision(selectedNode *v1.Node, allowedTop
 		volutil.VolumeDynamicallyCreatedByKey: heketiAnn,
 		glusterTypeAnn:                        "file",
 		"Description":                         glusterDescAnn,
-		v1.MountOptionAnnotation:              "auto_unmount",
 		heketiVolIDAnn:                        volID,
 	}
 
@@ -744,7 +775,10 @@ func (p *glusterfsVolumeProvisioner) CreateVolume(gid int) (r *v1.GlusterfsVolum
 	capacity := p.options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
 
 	// GlusterFS/heketi creates volumes in units of GiB.
-	sz := int(volutil.RoundUpToGiB(capacity))
+	sz, err := volutil.RoundUpToGiBInt(capacity)
+	if err != nil {
+		return nil, 0, "", err
+	}
 	glog.V(2).Infof("create volume of size %dGiB", sz)
 
 	if p.url == "" {
@@ -1145,7 +1179,7 @@ func (plugin *glusterfsPlugin) ExpandVolumeDevice(spec *volume.Spec, newSize res
 		return oldSize, err
 	}
 
-	glog.V(4).Infof("expanding volume: %q with configuration: %+v", volumeID, cfg)
+	glog.V(4).Infof("expanding volume: %q", volumeID)
 
 	//Create REST server connection
 	cli := gcli.NewClient(cfg.url, cfg.user, cfg.secretValue)

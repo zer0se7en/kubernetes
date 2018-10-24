@@ -17,7 +17,7 @@ go_test(
         "//staging/src/k8s.io/apimachinery/pkg/labels:go_default_library",
         "//staging/src/k8s.io/apimachinery/pkg/runtime/schema:go_default_library",
         "//staging/src/k8s.io/apiserver/pkg/authentication/user:go_default_library",
-        "//staging/src/k8s.io/client-go/tools/bootstrap/token/api:go_default_library",
+        "//staging/src/k8s.io/cluster-bootstrap/token/api:go_default_library",
     ],
 )
 
@@ -30,9 +30,10 @@ go_library(
         "//pkg/client/listers/core/internalversion:go_default_library",
         "//staging/src/k8s.io/apimachinery/pkg/api/errors:go_default_library",
         "//staging/src/k8s.io/apimachinery/pkg/util/sets:go_default_library",
+        "//staging/src/k8s.io/apiserver/pkg/authentication/authenticator:go_default_library",
         "//staging/src/k8s.io/apiserver/pkg/authentication/user:go_default_library",
-        "//staging/src/k8s.io/client-go/tools/bootstrap/token/api:go_default_library",
-        "//staging/src/k8s.io/client-go/tools/bootstrap/token/util:go_default_library",
+        "//staging/src/k8s.io/cluster-bootstrap/token/api:go_default_library",
+        "//staging/src/k8s.io/cluster-bootstrap/token/util:go_default_library",
         "//vendor/github.com/golang/glog:go_default_library",
     ],
 )

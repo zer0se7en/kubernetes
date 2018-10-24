@@ -36,12 +36,12 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	clientretry "k8s.io/client-go/util/retry"
+	cloudprovider "k8s.io/cloud-provider"
 	nodeutilv1 "k8s.io/kubernetes/pkg/api/v1/node"
-	"k8s.io/kubernetes/pkg/cloudprovider"
 	"k8s.io/kubernetes/pkg/controller"
 	nodectrlutil "k8s.io/kubernetes/pkg/controller/util/node"
 	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm"
+	schedulerapi "k8s.io/kubernetes/pkg/scheduler/api"
 	nodeutil "k8s.io/kubernetes/pkg/util/node"
 )
 
@@ -337,6 +337,21 @@ func (cnc *CloudNodeController) AddCloudNode(obj interface{}) {
 	}
 
 	err := clientretry.RetryOnConflict(UpdateNodeSpecBackoff, func() error {
+		// TODO(wlan0): Move this logic to the route controller using the node taint instead of condition
+		// Since there are node taints, do we still need this?
+		// This condition marks the node as unusable until routes are initialized in the cloud provider
+		if cnc.cloud.ProviderName() == "gce" {
+			if err := nodeutil.SetNodeCondition(cnc.kubeClient, types.NodeName(node.Name), v1.NodeCondition{
+				Type:               v1.NodeNetworkUnavailable,
+				Status:             v1.ConditionTrue,
+				Reason:             "NoRouteCreated",
+				Message:            "Node created without a route",
+				LastTransitionTime: metav1.Now(),
+			}); err != nil {
+				return err
+			}
+		}
+
 		curNode, err := cnc.kubeClient.CoreV1().Nodes().Get(node.Name, metav1.GetOptions{})
 		if err != nil {
 			return err
@@ -372,19 +387,6 @@ func (cnc *CloudNodeController) AddCloudNode(obj interface{}) {
 		} else if instanceType != "" {
 			glog.V(2).Infof("Adding node label from cloud provider: %s=%s", kubeletapis.LabelInstanceType, instanceType)
 			curNode.ObjectMeta.Labels[kubeletapis.LabelInstanceType] = instanceType
-		}
-
-		// TODO(wlan0): Move this logic to the route controller using the node taint instead of condition
-		// Since there are node taints, do we still need this?
-		// This condition marks the node as unusable until routes are initialized in the cloud provider
-		if cnc.cloud.ProviderName() == "gce" {
-			curNode.Status.Conditions = append(node.Status.Conditions, v1.NodeCondition{
-				Type:               v1.NodeNetworkUnavailable,
-				Status:             v1.ConditionTrue,
-				Reason:             "NoRouteCreated",
-				Message:            "Node created without a route",
-				LastTransitionTime: metav1.Now(),
-			})
 		}
 
 		if zones, ok := cnc.cloud.Zones(); ok {
@@ -423,7 +425,7 @@ func (cnc *CloudNodeController) AddCloudNode(obj interface{}) {
 
 func getCloudTaint(taints []v1.Taint) *v1.Taint {
 	for _, taint := range taints {
-		if taint.Key == algorithm.TaintExternalCloudProvider {
+		if taint.Key == schedulerapi.TaintExternalCloudProvider {
 			return &taint
 		}
 	}

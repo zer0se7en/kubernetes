@@ -27,12 +27,14 @@ import (
 
 	apps "k8s.io/api/apps/v1"
 	"k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/clock"
+	"k8s.io/apimachinery/pkg/util/rand"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
@@ -45,7 +47,7 @@ import (
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	_ "k8s.io/kubernetes/pkg/apis/core/install"
 	"k8s.io/kubernetes/pkg/apis/core/validation"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm"
+	schedulerapi "k8s.io/kubernetes/pkg/scheduler/api"
 	hashutil "k8s.io/kubernetes/pkg/util/hash"
 	taintutils "k8s.io/kubernetes/pkg/util/taints"
 
@@ -88,7 +90,7 @@ var UpdateTaintBackoff = wait.Backoff{
 }
 
 var ShutdownTaint = &v1.Taint{
-	Key:    algorithm.TaintNodeShutdown,
+	Key:    schedulerapi.TaintNodeShutdown,
 	Effect: v1.TaintEffectNoSchedule,
 }
 
@@ -594,7 +596,7 @@ func (r RealPodControl) DeletePod(namespace string, podID string, object runtime
 		return fmt.Errorf("object does not have ObjectMeta, %v", err)
 	}
 	glog.V(2).Infof("Controller %v deleting pod %v/%v", accessor.GetName(), namespace, podID)
-	if err := r.KubeClient.CoreV1().Pods(namespace).Delete(podID, nil); err != nil {
+	if err := r.KubeClient.CoreV1().Pods(namespace).Delete(podID, nil); err != nil && !apierrors.IsNotFound(err) {
 		r.Recorder.Eventf(object, v1.EventTypeWarning, FailedDeletePodReason, "Error deleting: %v", err)
 		return fmt.Errorf("unable to delete pods: %v", err)
 	} else {
@@ -1033,8 +1035,10 @@ func WaitForCacheSync(controllerName string, stopCh <-chan struct{}, cacheSyncs 
 	return true
 }
 
-// ComputeHash returns a hash value calculated from pod template and a collisionCount to avoid hash collision
-func ComputeHash(template *v1.PodTemplateSpec, collisionCount *int32) uint32 {
+// ComputeHash returns a hash value calculated from pod template and
+// a collisionCount to avoid hash collision. The hash will be safe encoded to
+// avoid bad words.
+func ComputeHash(template *v1.PodTemplateSpec, collisionCount *int32) string {
 	podTemplateSpecHasher := fnv.New32a()
 	hashutil.DeepHashObject(podTemplateSpecHasher, *template)
 
@@ -1045,5 +1049,5 @@ func ComputeHash(template *v1.PodTemplateSpec, collisionCount *int32) uint32 {
 		podTemplateSpecHasher.Write(collisionCountBytes)
 	}
 
-	return podTemplateSpecHasher.Sum32()
+	return rand.SafeEncodeString(fmt.Sprint(podTemplateSpecHasher.Sum32()))
 }

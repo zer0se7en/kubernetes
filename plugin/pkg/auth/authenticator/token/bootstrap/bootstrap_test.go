@@ -17,6 +17,7 @@ limitations under the License.
 package bootstrap
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -25,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/authentication/user"
-	bootstrapapi "k8s.io/client-go/tools/bootstrap/token/api"
+	bootstrapapi "k8s.io/cluster-bootstrap/token/api"
 	api "k8s.io/kubernetes/pkg/apis/core"
 )
 
@@ -262,7 +263,7 @@ func TestTokenAuthenticator(t *testing.T) {
 	for _, test := range tests {
 		func() {
 			a := NewTokenAuthenticator(&lister{test.secrets})
-			u, found, err := a.AuthenticateToken(test.token)
+			resp, found, err := a.AuthenticateToken(context.Background(), test.token)
 			if err != nil {
 				t.Errorf("test %q returned an error: %v", test.name, err)
 				return
@@ -280,8 +281,7 @@ func TestTokenAuthenticator(t *testing.T) {
 				return
 			}
 
-			gotUser := u.(*user.DefaultInfo)
-
+			gotUser := resp.User.(*user.DefaultInfo)
 			if !reflect.DeepEqual(gotUser, test.wantUser) {
 				t.Errorf("test %q want user=%#v, got=%#v", test.name, test.wantUser, gotUser)
 			}

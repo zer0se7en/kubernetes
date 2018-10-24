@@ -24,16 +24,15 @@ import (
 	kubeletapp "k8s.io/kubernetes/cmd/kubelet/app"
 	"k8s.io/kubernetes/cmd/kubelet/app/options"
 	"k8s.io/kubernetes/pkg/kubelet"
-	"k8s.io/kubernetes/pkg/kubelet/apis/kubeletconfig"
+	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	"k8s.io/kubernetes/pkg/kubelet/cadvisor"
 	"k8s.io/kubernetes/pkg/kubelet/cm"
 	containertest "k8s.io/kubernetes/pkg/kubelet/container/testing"
 	"k8s.io/kubernetes/pkg/kubelet/dockershim"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
-	kubeio "k8s.io/kubernetes/pkg/util/io"
 	"k8s.io/kubernetes/pkg/util/mount"
 	"k8s.io/kubernetes/pkg/util/oom"
-	"k8s.io/kubernetes/pkg/volume/empty_dir"
+	"k8s.io/kubernetes/pkg/volume/emptydir"
 	"k8s.io/kubernetes/pkg/volume/secret"
 	"k8s.io/kubernetes/test/utils"
 
@@ -63,11 +62,11 @@ func NewHollowKubelet(
 	// -----------------
 	// Injected objects
 	// -----------------
-	volumePlugins := empty_dir.ProbeVolumePlugins()
+	volumePlugins := emptydir.ProbeVolumePlugins()
 	volumePlugins = append(volumePlugins, secret.ProbeVolumePlugins()...)
 	d := &kubelet.Dependencies{
 		KubeClient:         client,
-		HeartbeatClient:    client.CoreV1(),
+		HeartbeatClient:    client,
 		DockerClientConfig: dockerClientConfig,
 		CAdvisorInterface:  cadvisorInterface,
 		Cloud:              nil,
@@ -76,7 +75,6 @@ func NewHollowKubelet(
 		VolumePlugins:      volumePlugins,
 		TLSOptions:         nil,
 		OOMAdjuster:        oom.NewFakeOOMAdjuster(),
-		Writer:             &kubeio.StdWriter{},
 		Mounter:            mount.New("" /* default mount path */),
 	}
 
@@ -89,7 +87,10 @@ func NewHollowKubelet(
 
 // Starts this HollowKubelet and blocks.
 func (hk *HollowKubelet) Run() {
-	if err := kubeletapp.RunKubelet(hk.KubeletFlags, hk.KubeletConfiguration, hk.KubeletDeps, false); err != nil {
+	if err := kubeletapp.RunKubelet(&options.KubeletServer{
+		KubeletFlags:         *hk.KubeletFlags,
+		KubeletConfiguration: *hk.KubeletConfiguration,
+	}, hk.KubeletDeps, false); err != nil {
 		glog.Fatalf("Failed to run HollowKubelet: %v. Exiting.", err)
 	}
 	select {}

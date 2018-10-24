@@ -11,9 +11,9 @@ go_library(
     srcs = [
         "cached_discovery.go",
         "discovery_client.go",
+        "doc.go",
         "helper.go",
         "round_tripper.go",
-        "unstructured.go",
     ],
     importmap = "k8s.io/kubernetes/vendor/k8s.io/client-go/discovery",
     importpath = "k8s.io/client-go/discovery",

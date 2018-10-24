@@ -61,6 +61,7 @@ var _ volume.ProvisionableVolumePlugin = &rbdPlugin{}
 var _ volume.AttachableVolumePlugin = &rbdPlugin{}
 var _ volume.ExpandableVolumePlugin = &rbdPlugin{}
 var _ volume.BlockVolumePlugin = &rbdPlugin{}
+var _ volume.DeviceMountableVolumePlugin = &rbdPlugin{}
 
 const (
 	rbdPluginName                  = "kubernetes.io/rbd"
@@ -162,7 +163,7 @@ func (plugin *rbdPlugin) getAdminAndSecret(spec *volume.Spec) (string, string, e
 
 func (plugin *rbdPlugin) ExpandVolumeDevice(spec *volume.Spec, newSize resource.Quantity, oldSize resource.Quantity) (resource.Quantity, error) {
 	if spec.PersistentVolume != nil && spec.PersistentVolume.Spec.RBD == nil {
-		return oldSize, fmt.Errorf("spec.PersistentVolumeSource.Spec.RBD is nil")
+		return oldSize, fmt.Errorf("spec.PersistentVolume.Spec.RBD is nil")
 	}
 
 	// get admin and secret
@@ -540,7 +541,7 @@ func (plugin *rbdPlugin) getDeviceNameFromOldMountPath(mounter mount.Interface, 
 
 func (plugin *rbdPlugin) NewDeleter(spec *volume.Spec) (volume.Deleter, error) {
 	if spec.PersistentVolume != nil && spec.PersistentVolume.Spec.RBD == nil {
-		return nil, fmt.Errorf("spec.PersistentVolumeSource.Spec.RBD is nil")
+		return nil, fmt.Errorf("spec.PersistentVolume.Spec.RBD is nil")
 	}
 
 	admin, secret, err := plugin.getAdminAndSecret(spec)
@@ -691,6 +692,15 @@ func (r *rbdVolumeProvisioner) Provision(selectedNode *v1.Node, allowedTopologie
 		rbd.Keyring = keyring
 	}
 
+	var volumeMode *v1.PersistentVolumeMode
+	if utilfeature.DefaultFeatureGate.Enabled(features.BlockVolume) {
+		volumeMode = r.options.PVC.Spec.VolumeMode
+		if volumeMode != nil && *volumeMode == v1.PersistentVolumeBlock {
+			// Block volumes should not have any FSType
+			fstype = ""
+		}
+	}
+
 	rbd.RadosUser = r.Id
 	rbd.FSType = fstype
 	pv.Spec.PersistentVolumeSource.RBD = rbd
@@ -703,10 +713,7 @@ func (r *rbdVolumeProvisioner) Provision(selectedNode *v1.Node, allowedTopologie
 		v1.ResourceName(v1.ResourceStorage): resource.MustParse(fmt.Sprintf("%dMi", sizeMB)),
 	}
 	pv.Spec.MountOptions = r.options.MountOptions
-
-	if utilfeature.DefaultFeatureGate.Enabled(features.BlockVolume) {
-		pv.Spec.VolumeMode = r.options.PVC.Spec.VolumeMode
-	}
+	pv.Spec.VolumeMode = volumeMode
 
 	return pv, nil
 }
@@ -951,29 +958,6 @@ func (rbd *rbdDiskUnmapper) TearDownDevice(mapPath, _ string) error {
 	device, err := getBlockVolumeDevice(mapPath)
 	if err != nil {
 		return fmt.Errorf("rbd: failed to get loopback for device: %v, err: %v", device, err)
-	}
-	// Get loopback device which takes fd lock for device beofore detaching a volume from node.
-	// TODO: This is a workaround for issue #54108
-	// Currently local attach plugins such as FC, iSCSI, RBD can't obtain devicePath during
-	// GenerateUnmapDeviceFunc() in operation_generator. As a result, these plugins fail to get
-	// and remove loopback device then it will be remained on kubelet node. To avoid the problem,
-	// local attach plugins needs to remove loopback device during TearDownDevice().
-	blkUtil := volumepathhandler.NewBlockVolumePathHandler()
-	loop, err := volumepathhandler.BlockVolumePathHandler.GetLoopDevice(blkUtil, device)
-	if err != nil {
-		if err.Error() != volumepathhandler.ErrDeviceNotFound {
-			return fmt.Errorf("rbd: failed to get loopback for device: %v, err: %v", device, err)
-		}
-		glog.Warning("rbd: loopback for device: % not found", device)
-	} else {
-		if len(loop) != 0 {
-			// Remove loop device before detaching volume since volume detach operation gets busy if volume is opened by loopback.
-			err = volumepathhandler.BlockVolumePathHandler.RemoveLoopDevice(blkUtil, loop)
-			if err != nil {
-				return fmt.Errorf("rbd: failed to remove loopback :%v, err: %v", loop, err)
-			}
-			glog.V(4).Infof("rbd: successfully removed loop device: %s", loop)
-		}
 	}
 
 	err = rbd.manager.DetachBlockDisk(*rbd, mapPath)

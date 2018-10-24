@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apiserver/pkg/authentication/authenticator"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
 	authenticationapi "k8s.io/kubernetes/pkg/apis/authentication"
@@ -43,7 +44,7 @@ type TokenREST struct {
 	pods                 getter
 	secrets              getter
 	issuer               token.TokenGenerator
-	auds                 []string
+	auds                 authenticator.Audiences
 	maxExpirationSeconds int64
 }
 
@@ -56,7 +57,7 @@ var gvk = schema.GroupVersionKind{
 	Kind:    "TokenRequest",
 }
 
-func (r *TokenREST) Create(ctx context.Context, name string, obj runtime.Object, createValidation rest.ValidateObjectFunc, includeUninitialized bool) (runtime.Object, error) {
+func (r *TokenREST) Create(ctx context.Context, name string, obj runtime.Object, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions) (runtime.Object, error) {
 	if err := createValidation(obj); err != nil {
 		return nil, err
 	}

@@ -20,6 +20,7 @@ Package bootstrap provides a token authenticator for TLS bootstrap secrets.
 package bootstrap
 
 import (
+	"context"
 	"crypto/subtle"
 	"fmt"
 	"regexp"
@@ -30,9 +31,10 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
-	bootstrapapi "k8s.io/client-go/tools/bootstrap/token/api"
-	bootstraputil "k8s.io/client-go/tools/bootstrap/token/util"
+	bootstrapapi "k8s.io/cluster-bootstrap/token/api"
+	bootstraputil "k8s.io/cluster-bootstrap/token/util"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/client/listers/core/internalversion"
 )
@@ -89,7 +91,7 @@ func tokenErrorf(s *api.Secret, format string, i ...interface{}) {
 //
 //     ( token-id ).( token-secret )
 //
-func (t *TokenAuthenticator) AuthenticateToken(token string) (user.Info, bool, error) {
+func (t *TokenAuthenticator) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
 	tokenID, tokenSecret, err := parseToken(token)
 	if err != nil {
 		// Token isn't of the correct form, ignore it.
@@ -144,13 +146,15 @@ func (t *TokenAuthenticator) AuthenticateToken(token string) (user.Info, bool, e
 		return nil, false, nil
 	}
 
-	return &user.DefaultInfo{
-		Name:   bootstrapapi.BootstrapUserPrefix + string(id),
-		Groups: groups,
+	return &authenticator.Response{
+		User: &user.DefaultInfo{
+			Name:   bootstrapapi.BootstrapUserPrefix + string(id),
+			Groups: groups,
+		},
 	}, true, nil
 }
 
-// Copied from k8s.io/client-go/tools/bootstrap/token/api
+// Copied from k8s.io/cluster-bootstrap/token/api
 func getSecretString(secret *api.Secret, key string) string {
 	data, ok := secret.Data[key]
 	if !ok {
@@ -160,7 +164,7 @@ func getSecretString(secret *api.Secret, key string) string {
 	return string(data)
 }
 
-// Copied from k8s.io/client-go/tools/bootstrap/token/api
+// Copied from k8s.io/cluster-bootstrap/token/api
 func isSecretExpired(secret *api.Secret) bool {
 	expiration := getSecretString(secret, bootstrapapi.BootstrapTokenExpirationKey)
 	if len(expiration) > 0 {

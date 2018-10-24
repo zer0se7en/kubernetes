@@ -18,6 +18,7 @@ limitations under the License.
 package webhook
 
 import (
+	"context"
 	"time"
 
 	"github.com/golang/glog"
@@ -26,7 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/cache"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/util/webhook"
@@ -70,7 +70,7 @@ func newWithBackoff(tokenReview authenticationclient.TokenReviewInterface, ttl, 
 }
 
 // AuthenticateToken implements the authenticator.Token interface.
-func (w *WebhookTokenAuthenticator) AuthenticateToken(token string) (user.Info, bool, error) {
+func (w *WebhookTokenAuthenticator) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
 	r := &authentication.TokenReview{
 		Spec: authentication.TokenReviewSpec{Token: token},
 	}
@@ -105,11 +105,13 @@ func (w *WebhookTokenAuthenticator) AuthenticateToken(token string) (user.Info, 
 		}
 	}
 
-	return &user.DefaultInfo{
-		Name:   r.Status.User.Username,
-		UID:    r.Status.User.UID,
-		Groups: r.Status.User.Groups,
-		Extra:  extra,
+	return &authenticator.Response{
+		User: &user.DefaultInfo{
+			Name:   r.Status.User.Username,
+			UID:    r.Status.User.UID,
+			Groups: r.Status.User.Groups,
+			Extra:  extra,
+		},
 	}, true, nil
 }
 
@@ -118,8 +120,12 @@ func (w *WebhookTokenAuthenticator) AuthenticateToken(token string) (user.Info, 
 // requests to the exact path specified in the kubeconfig file, so arbitrary non-API servers can be targeted.
 func tokenReviewInterfaceFromKubeconfig(kubeConfigFile string) (authenticationclient.TokenReviewInterface, error) {
 	localScheme := runtime.NewScheme()
-	scheme.AddToScheme(localScheme)
-	utilruntime.Must(localScheme.SetVersionPriority(groupVersions...))
+	if err := scheme.AddToScheme(localScheme); err != nil {
+		return nil, err
+	}
+	if err := localScheme.SetVersionPriority(groupVersions...); err != nil {
+		return nil, err
+	}
 
 	gw, err := webhook.NewGenericWebhook(localScheme, scheme.Codecs, kubeConfigFile, groupVersions, 0)
 	if err != nil {
