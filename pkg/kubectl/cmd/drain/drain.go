@@ -160,9 +160,9 @@ var (
 		Drain node in preparation for maintenance.
 
 		The given node will be marked unschedulable to prevent new pods from arriving.
-		'drain' evicts the pods if the APIServer supports eviction
-		(http://kubernetes.io/docs/admin/disruptions/). Otherwise, it will use normal DELETE
-		to delete the pods.
+		'drain' evicts the pods if the APIServer supports 
+		[eviction](http://kubernetes.io/docs/admin/disruptions/). Otherwise, it will use normal
+		DELETE to delete the pods.
 		The 'drain' evicts or deletes all pods except mirror pods (which cannot be deleted through
 		the API server).  If there are DaemonSet-managed pods, drain will not proceed
 		without --ignore-daemonsets, and regardless it will not delete any
@@ -234,9 +234,6 @@ func (o *DrainOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []st
 	}
 	if len(args) > 0 && len(o.Selector) > 0 {
 		return cmdutil.UsageErrorf(cmd, "error: cannot specify both a node name and a --selector option")
-	}
-	if len(args) > 0 && len(args) != 1 {
-		return cmdutil.UsageErrorf(cmd, fmt.Sprintf("USAGE: %s [flags]", cmd.Use))
 	}
 
 	o.DryRun = cmdutil.GetDryRunFlag(cmd)
@@ -748,7 +745,7 @@ func (o *DrainOptions) RunCordonOrUncordon(desired bool) error {
 					fmt.Fprintf(o.ErrOut, "error: %v\n", err)
 					continue
 				}
-				printObj(cmdutil.AsDefaultVersionedOrOriginal(nodeInfo.Object, nodeInfo.Mapping), o.Out)
+				printObj(nodeInfo.Object, o.Out)
 			} else {
 				if !o.DryRun {
 					helper := resource.NewHelper(o.restClient, nodeInfo.Mapping)
@@ -774,7 +771,7 @@ func (o *DrainOptions) RunCordonOrUncordon(desired bool) error {
 					fmt.Fprintf(o.ErrOut, "%v\n", err)
 					continue
 				}
-				printObj(cmdutil.AsDefaultVersionedOrOriginal(nodeInfo.Object, nodeInfo.Mapping), o.Out)
+				printObj(nodeInfo.Object, o.Out)
 			}
 		} else {
 			printObj, err := o.ToPrinter("skipped")
@@ -782,7 +779,7 @@ func (o *DrainOptions) RunCordonOrUncordon(desired bool) error {
 				fmt.Fprintf(o.ErrOut, "%v\n", err)
 				continue
 			}
-			printObj(cmdutil.AsDefaultVersionedOrOriginal(nodeInfo.Object, nodeInfo.Mapping), o.Out)
+			printObj(nodeInfo.Object, o.Out)
 		}
 	}
 

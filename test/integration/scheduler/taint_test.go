@@ -28,11 +28,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
-	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
-	internalinformers "k8s.io/kubernetes/pkg/client/informers/informers_generated/internalversion"
 	"k8s.io/kubernetes/pkg/controller/nodelifecycle"
-	kubeadmission "k8s.io/kubernetes/pkg/kubeapiserver/admission"
 	"k8s.io/kubernetes/pkg/scheduler/algorithmprovider"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/api"
 	"k8s.io/kubernetes/plugin/pkg/admission/podtolerationrestriction"
@@ -77,22 +76,19 @@ func TestTaintNodeByCondition(t *testing.T) {
 	context := initTestMaster(t, "default", admission)
 
 	// Build clientset and informers for controllers.
-	internalClientset := internalclientset.NewForConfigOrDie(&restclient.Config{
+	externalClientset := kubernetes.NewForConfigOrDie(&restclient.Config{
 		QPS:           -1,
 		Host:          context.httpServer.URL,
 		ContentConfig: restclient.ContentConfig{GroupVersion: &schema.GroupVersion{Group: "", Version: "v1"}}})
-	internalInformers := internalinformers.NewSharedInformerFactory(internalClientset, time.Second)
+	externalInformers := informers.NewSharedInformerFactory(externalClientset, time.Second)
 
-	kubeadmission.WantsInternalKubeClientSet(admission).SetInternalKubeClientSet(internalClientset)
-	kubeadmission.WantsInternalKubeInformerFactory(admission).SetInternalKubeInformerFactory(internalInformers)
-
-	controllerCh := make(chan struct{})
-	defer close(controllerCh)
+	admission.SetExternalKubeClientSet(externalClientset)
+	admission.SetExternalKubeInformerFactory(externalInformers)
 
 	// Apply feature gates to enable TaintNodesByCondition
 	algorithmprovider.ApplyFeatureGates()
 
-	context = initTestScheduler(t, context, controllerCh, false, nil)
+	context = initTestScheduler(t, context, false, nil)
 	cs := context.clientSet
 	informers := context.informerFactory
 	nsName := context.ns.Name
@@ -121,13 +117,13 @@ func TestTaintNodeByCondition(t *testing.T) {
 		t.Errorf("Failed to create node controller: %v", err)
 		return
 	}
-	go nc.Run(controllerCh)
+	go nc.Run(context.stopCh)
 
 	// Waiting for all controller sync.
-	internalInformers.Start(controllerCh)
-	internalInformers.WaitForCacheSync(controllerCh)
-	informers.Start(controllerCh)
-	informers.WaitForCacheSync(controllerCh)
+	externalInformers.Start(context.stopCh)
+	externalInformers.WaitForCacheSync(context.stopCh)
+	informers.Start(context.stopCh)
+	informers.WaitForCacheSync(context.stopCh)
 
 	// -------------------------------------------
 	// Test TaintNodeByCondition feature.

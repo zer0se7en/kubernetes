@@ -25,13 +25,10 @@ go_test(
         "//cmd/kube-scheduler/app:go_default_library",
         "//cmd/kube-scheduler/app/config:go_default_library",
         "//pkg/api/legacyscheme:go_default_library",
-        "//pkg/client/clientset_generated/internalclientset:go_default_library",
-        "//pkg/client/informers/informers_generated/internalversion:go_default_library",
         "//pkg/controller/nodelifecycle:go_default_library",
         "//pkg/controller/volume/persistentvolume:go_default_library",
         "//pkg/controller/volume/persistentvolume/options:go_default_library",
         "//pkg/features:go_default_library",
-        "//pkg/kubeapiserver/admission:go_default_library",
         "//pkg/scheduler:go_default_library",
         "//pkg/scheduler/algorithm:go_default_library",
         "//pkg/scheduler/algorithm/predicates:go_default_library",
@@ -67,7 +64,7 @@ go_test(
         "//test/integration/framework:go_default_library",
         "//test/utils:go_default_library",
         "//test/utils/image:go_default_library",
-        "//vendor/github.com/golang/glog:go_default_library",
+        "//vendor/k8s.io/klog:go_default_library",
     ],
 )
 
