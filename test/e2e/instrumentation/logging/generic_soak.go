@@ -23,8 +23,7 @@ import (
 	"sync"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
+	"github.com/onsi/ginkgo"
 	"k8s.io/api/core/v1"
 	"k8s.io/kubernetes/test/e2e/framework"
 	"k8s.io/kubernetes/test/e2e/framework/config"
@@ -51,15 +50,15 @@ var _ = instrumentation.SIGDescribe("Logging soak [Performance] [Slow] [Disrupti
 	// This can expose problems in your docker configuration (logging), log searching infrastructure, to tune deployments to match high load
 	// scenarios.  TODO jayunit100 add this to the kube CI in a follow on infra patch.
 
-	It(fmt.Sprintf("should survive logging 1KB every %v seconds, for a duration of %v", kbRateInSeconds, totalLogTime), func() {
-		By(fmt.Sprintf("scaling up to %v pods per node", loggingSoak.Scale))
-		defer GinkgoRecover()
+	ginkgo.It(fmt.Sprintf("should survive logging 1KB every %v seconds, for a duration of %v", kbRateInSeconds, totalLogTime), func() {
+		ginkgo.By(fmt.Sprintf("scaling up to %v pods per node", loggingSoak.Scale))
+		defer ginkgo.GinkgoRecover()
 		var wg sync.WaitGroup
 		wg.Add(loggingSoak.Scale)
 		for i := 0; i < loggingSoak.Scale; i++ {
 			go func() {
 				defer wg.Done()
-				defer GinkgoRecover()
+				defer ginkgo.GinkgoRecover()
 				wave := fmt.Sprintf("wave%v", strconv.Itoa(i))
 				framework.Logf("Starting logging soak, wave = %v", wave)
 				RunLogPodsWithSleepOf(f, kbRateInSeconds, wave, totalLogTime)
@@ -79,7 +78,7 @@ func RunLogPodsWithSleepOf(f *framework.Framework, sleep time.Duration, podname 
 
 	nodes := framework.GetReadySchedulableNodesOrDie(f.ClientSet)
 	totalPods := len(nodes.Items)
-	Expect(totalPods).NotTo(Equal(0))
+	framework.ExpectNotEqual(totalPods, 0)
 
 	kilobyte := strings.Repeat("logs-123", 128) // 8*128=1024 = 1KB of text.
 
