@@ -18,6 +18,7 @@ package storage
 
 import (
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/onsi/ginkgo"
@@ -32,6 +33,7 @@ import (
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2epv "k8s.io/kubernetes/test/e2e/framework/pv"
+	e2essh "k8s.io/kubernetes/test/e2e/framework/ssh"
 	"k8s.io/kubernetes/test/e2e/framework/volume"
 	"k8s.io/kubernetes/test/e2e/storage/utils"
 )
@@ -40,6 +42,33 @@ type testBody func(c clientset.Interface, f *framework.Framework, clientPod *v1.
 type disruptiveTest struct {
 	testItStmt string
 	runTest    testBody
+}
+
+// checkForControllerManagerHealthy checks that the controller manager does not crash within "duration"
+func checkForControllerManagerHealthy(duration time.Duration) error {
+	var PID string
+	cmd := "pidof kube-controller-manager"
+	for start := time.Now(); time.Since(start) < duration; time.Sleep(5 * time.Second) {
+		result, err := e2essh.SSH(cmd, net.JoinHostPort(framework.GetMasterHost(), sshPort), framework.TestContext.Provider)
+		if err != nil {
+			// We don't necessarily know that it crashed, pipe could just be broken
+			e2essh.LogResult(result)
+			return fmt.Errorf("master unreachable after %v", time.Since(start))
+		} else if result.Code != 0 {
+			e2essh.LogResult(result)
+			return fmt.Errorf("SSH result code not 0. actually: %v after %v", result.Code, time.Since(start))
+		} else if result.Stdout != PID {
+			if PID == "" {
+				PID = result.Stdout
+			} else {
+				//its dead
+				return fmt.Errorf("controller manager crashed, old PID: %s, new PID: %s", PID, result.Stdout)
+			}
+		} else {
+			framework.Logf("kube-controller-manager still healthy after %v", time.Since(start))
+		}
+	}
+	return nil
 }
 
 var _ = utils.SIGDescribe("NFSPersistentVolumes[Disruptive][Flaky]", func() {
@@ -85,10 +114,10 @@ var _ = utils.SIGDescribe("NFSPersistentVolumes[Disruptive][Flaky]", func() {
 			StorageClassName: &emptyStorageClass,
 		}
 		// Get the first ready node IP that is not hosting the NFS pod.
-		var err error
 		if clientNodeIP == "" {
 			framework.Logf("Designating test node")
-			nodes := framework.GetReadySchedulableNodesOrDie(c)
+			nodes, err := e2enode.GetReadySchedulableNodes(c)
+			framework.ExpectNoError(err)
 			for _, node := range nodes.Items {
 				if node.Name != nfsServerPod.Spec.NodeName {
 					clientNode = &node
@@ -121,7 +150,7 @@ var _ = utils.SIGDescribe("NFSPersistentVolumes[Disruptive][Flaky]", func() {
 			framework.SkipUnlessSSHKeyPresent()
 
 			ginkgo.By("Initializing first PD with PVPVC binding")
-			pvSource1, diskName1 = volume.CreateGCEVolume()
+			pvSource1, diskName1 = createGCEVolume()
 			framework.ExpectNoError(err)
 			pvConfig1 = e2epv.PersistentVolumeConfig{
 				NamePrefix: "gce-",
@@ -134,7 +163,7 @@ var _ = utils.SIGDescribe("NFSPersistentVolumes[Disruptive][Flaky]", func() {
 			framework.ExpectNoError(e2epv.WaitOnPVandPVC(c, ns, pv1, pvc1))
 
 			ginkgo.By("Initializing second PD with PVPVC binding")
-			pvSource2, diskName2 = volume.CreateGCEVolume()
+			pvSource2, diskName2 = createGCEVolume()
 			framework.ExpectNoError(err)
 			pvConfig2 = e2epv.PersistentVolumeConfig{
 				NamePrefix: "gce-",
@@ -191,7 +220,7 @@ var _ = utils.SIGDescribe("NFSPersistentVolumes[Disruptive][Flaky]", func() {
 
 			ginkgo.By("Observing the kube-controller-manager healthy for at least 2 minutes")
 			// Continue checking for 2 minutes to make sure kube-controller-manager is healthy
-			err = framework.CheckForControllerManagerHealthy(2 * time.Minute)
+			err = checkForControllerManagerHealthy(2 * time.Minute)
 			framework.ExpectNoError(err)
 		})
 
@@ -244,6 +273,19 @@ var _ = utils.SIGDescribe("NFSPersistentVolumes[Disruptive][Flaky]", func() {
 		}
 	})
 })
+
+// createGCEVolume creates PersistentVolumeSource for GCEVolume.
+func createGCEVolume() (*v1.PersistentVolumeSource, string) {
+	diskName, err := e2epv.CreatePDWithRetry()
+	framework.ExpectNoError(err)
+	return &v1.PersistentVolumeSource{
+		GCEPersistentDisk: &v1.GCEPersistentDiskVolumeSource{
+			PDName:   diskName,
+			FSType:   "ext3",
+			ReadOnly: false,
+		},
+	}, diskName
+}
 
 // initTestCase initializes spec resources (pv, pvc, and pod) and returns pointers to be consumed
 // by the test.

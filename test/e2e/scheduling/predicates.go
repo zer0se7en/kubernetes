@@ -18,23 +18,25 @@ package scheduling
 
 import (
 	"fmt"
+	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	utilversion "k8s.io/apimachinery/pkg/util/version"
 	clientset "k8s.io/client-go/kubernetes"
-	"k8s.io/kubernetes/test/e2e/common"
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2eevents "k8s.io/kubernetes/test/e2e/framework/events"
 	e2ekubelet "k8s.io/kubernetes/test/e2e/framework/kubelet"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2erc "k8s.io/kubernetes/test/e2e/framework/rc"
 	testutils "k8s.io/kubernetes/test/utils"
 	imageutils "k8s.io/kubernetes/test/utils/image"
+	k8utilnet "k8s.io/utils/net"
 
 	"github.com/onsi/ginkgo"
 
@@ -69,7 +71,6 @@ type pausePodConfig struct {
 var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 	var cs clientset.Interface
 	var nodeList *v1.NodeList
-	var totalPodCapacity int64
 	var RCName string
 	var ns string
 	f := framework.NewDefaultFramework("sched-pred")
@@ -78,7 +79,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		rc, err := cs.CoreV1().ReplicationControllers(ns).Get(RCName, metav1.GetOptions{})
 		if err == nil && *(rc.Spec.Replicas) != 0 {
 			ginkgo.By("Cleaning up the replication controller")
-			err := framework.DeleteRCAndWaitForGC(f.ClientSet, ns, RCName)
+			err := e2erc.DeleteRCAndWaitForGC(f.ClientSet, ns, RCName)
 			framework.ExpectNoError(err)
 		}
 	})
@@ -96,7 +97,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		if err != nil {
 			framework.Logf("Unexpected error occurred: %v", err)
 		}
-		nodeList, err = e2enode.GetReadySchedulableNodesOrDie(cs)
+		nodeList, err = e2enode.GetReadySchedulableNodes(cs)
 		if err != nil {
 			framework.Logf("Unexpected error occurred: %v", err)
 		}
@@ -109,48 +110,9 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 
 		for _, node := range nodeList.Items {
 			framework.Logf("\nLogging pods the kubelet thinks is on node %v before test", node.Name)
-			e2ekubelet.PrintAllKubeletPods(cs, node.Name)
+			printAllKubeletPods(cs, node.Name)
 		}
 
-	})
-
-	// This test verifies that max-pods flag works as advertised. It assumes that cluster add-on pods stay stable
-	// and cannot be run in parallel with any other test that touches Nodes or Pods. It is so because to check
-	// if max-pods is working we need to fully saturate the cluster and keep it in this state for few seconds.
-	//
-	// Slow PR #13315 (8 min)
-	ginkgo.It("validates MaxPods limit number of pods that are allowed to run [Slow]", func() {
-		totalPodCapacity = 0
-
-		for _, node := range nodeList.Items {
-			framework.Logf("Node: %v", node)
-			podCapacity, found := node.Status.Capacity[v1.ResourcePods]
-			framework.ExpectEqual(found, true)
-			totalPodCapacity += podCapacity.Value()
-		}
-
-		currentlyScheduledPods := framework.WaitForStableCluster(cs, masterNodes)
-		podsNeededForSaturation := int(totalPodCapacity) - currentlyScheduledPods
-
-		ginkgo.By(fmt.Sprintf("Starting additional %v Pods to fully saturate the cluster max pods and trying to start another one", podsNeededForSaturation))
-
-		// As the pods are distributed randomly among nodes,
-		// it can easily happen that all nodes are satured
-		// and there is no need to create additional pods.
-		// StartPods requires at least one pod to replicate.
-		if podsNeededForSaturation > 0 {
-			framework.ExpectNoError(testutils.StartPods(cs, podsNeededForSaturation, ns, "maxp",
-				*initPausePod(f, pausePodConfig{
-					Name:   "",
-					Labels: map[string]string{"name": ""},
-				}), true, framework.Logf))
-		}
-		podName := "additional-pod"
-		WaitForSchedulerAfterAction(f, createPausePodAction(f, pausePodConfig{
-			Name:   podName,
-			Labels: map[string]string{"name": "additional"},
-		}), ns, podName, false)
-		verifyResult(cs, podsNeededForSaturation, 1, ns)
 	})
 
 	// This test verifies we don't allow scheduling of pods in a way that sum of local ephemeral storage limits of pods is greater than machines capacity.
@@ -171,7 +133,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 				nodeMaxAllocatable = allocatable.Value()
 			}
 		}
-		framework.WaitForStableCluster(cs, masterNodes)
+		WaitForStableCluster(cs, masterNodes)
 
 		pods, err := cs.CoreV1().Pods(metav1.NamespaceAll).List(metav1.ListOptions{})
 		framework.ExpectNoError(err)
@@ -246,7 +208,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		Description: Scheduling Pods MUST fail if the resource limits exceed Machine capacity.
 	*/
 	framework.ConformanceIt("validates resource limits of pods that are allowed to run ", func() {
-		framework.WaitForStableCluster(cs, masterNodes)
+		WaitForStableCluster(cs, masterNodes)
 		nodeMaxAllocatable := int64(0)
 		nodeToAllocatableMap := make(map[string]int64)
 		for _, node := range nodeList.Items {
@@ -356,7 +318,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		ginkgo.By("Trying to schedule Pod with nonempty NodeSelector.")
 		podName := "restricted-pod"
 
-		framework.WaitForStableCluster(cs, masterNodes)
+		WaitForStableCluster(cs, masterNodes)
 
 		conf := pausePodConfig{
 			Name:   podName,
@@ -411,7 +373,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		ginkgo.By("Trying to schedule Pod with nonempty NodeSelector.")
 		podName := "restricted-pod"
 
-		framework.WaitForStableCluster(cs, masterNodes)
+		WaitForStableCluster(cs, masterNodes)
 
 		conf := pausePodConfig{
 			Name: podName,
@@ -637,6 +599,22 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 	})
 })
 
+// printAllKubeletPods outputs status of all kubelet pods into log.
+func printAllKubeletPods(c clientset.Interface, nodeName string) {
+	podList, err := e2ekubelet.GetKubeletPods(c, nodeName)
+	if err != nil {
+		framework.Logf("Unable to retrieve kubelet pods for node %v: %v", nodeName, err)
+		return
+	}
+	for _, p := range podList.Items {
+		framework.Logf("%v from %v started at %v (%d container statuses recorded)", p.Name, p.Namespace, p.Status.StartTime, len(p.Status.ContainerStatuses))
+		for _, c := range p.Status.ContainerStatuses {
+			framework.Logf("\tContainer %v ready: %v, restart count %v",
+				c.Name, c.Ready, c.RestartCount)
+		}
+	}
+}
+
 func initPausePod(f *framework.Framework, conf pausePodConfig) *v1.Pod {
 	var gracePeriod = int64(1)
 	pod := &v1.Pod{
@@ -722,7 +700,7 @@ func getRequestedStorageEphemeralStorage(pod v1.Pod) int64 {
 
 // removeTaintFromNodeAction returns a closure that removes the given taint
 // from the given node upon invocation.
-func removeTaintFromNodeAction(cs clientset.Interface, nodeName string, testTaint v1.Taint) common.Action {
+func removeTaintFromNodeAction(cs clientset.Interface, nodeName string, testTaint v1.Taint) e2eevents.Action {
 	return func() error {
 		framework.RemoveTaintOffNode(cs, nodeName, testTaint)
 		return nil
@@ -730,7 +708,7 @@ func removeTaintFromNodeAction(cs clientset.Interface, nodeName string, testTain
 }
 
 // createPausePodAction returns a closure that creates a pause pod upon invocation.
-func createPausePodAction(f *framework.Framework, conf pausePodConfig) common.Action {
+func createPausePodAction(f *framework.Framework, conf pausePodConfig) e2eevents.Action {
 	return func() error {
 		_, err := f.ClientSet.CoreV1().Pods(f.Namespace.Name).Create(initPausePod(f, conf))
 		return err
@@ -739,12 +717,12 @@ func createPausePodAction(f *framework.Framework, conf pausePodConfig) common.Ac
 
 // WaitForSchedulerAfterAction performs the provided action and then waits for
 // scheduler to act on the given pod.
-func WaitForSchedulerAfterAction(f *framework.Framework, action common.Action, ns, podName string, expectSuccess bool) {
+func WaitForSchedulerAfterAction(f *framework.Framework, action e2eevents.Action, ns, podName string, expectSuccess bool) {
 	predicate := scheduleFailureEvent(podName)
 	if expectSuccess {
 		predicate = scheduleSuccessEvent(ns, podName, "" /* any node */)
 	}
-	success, err := common.ObserveEventAfterAction(f, predicate, action)
+	success, err := e2eevents.ObserveEventAfterAction(f.ClientSet, f.Namespace.Name, predicate, action)
 	framework.ExpectNoError(err)
 	framework.ExpectEqual(success, true)
 }
@@ -753,39 +731,10 @@ func WaitForSchedulerAfterAction(f *framework.Framework, action common.Action, n
 func verifyResult(c clientset.Interface, expectedScheduled int, expectedNotScheduled int, ns string) {
 	allPods, err := c.CoreV1().Pods(ns).List(metav1.ListOptions{})
 	framework.ExpectNoError(err)
-	scheduledPods, notScheduledPods := e2epod.GetPodsScheduled(masterNodes, allPods)
+	scheduledPods, notScheduledPods := GetPodsScheduled(masterNodes, allPods)
 
 	framework.ExpectEqual(len(notScheduledPods), expectedNotScheduled, fmt.Sprintf("Not scheduled Pods: %#v", notScheduledPods))
 	framework.ExpectEqual(len(scheduledPods), expectedScheduled, fmt.Sprintf("Scheduled Pods: %#v", scheduledPods))
-}
-
-// verifyReplicasResult is wrapper of verifyResult for a group pods with same "name: labelName" label, which means they belong to same RC
-func verifyReplicasResult(c clientset.Interface, expectedScheduled int, expectedNotScheduled int, ns string, labelName string) {
-	allPods := getPodsByLabels(c, ns, map[string]string{"name": labelName})
-	scheduledPods, notScheduledPods := e2epod.GetPodsScheduled(masterNodes, allPods)
-
-	framework.ExpectEqual(len(notScheduledPods), expectedNotScheduled, fmt.Sprintf("Not scheduled Pods: %#v", notScheduledPods))
-	framework.ExpectEqual(len(scheduledPods), expectedScheduled, fmt.Sprintf("Scheduled Pods: %#v", scheduledPods))
-}
-
-func getPodsByLabels(c clientset.Interface, ns string, labelsMap map[string]string) *v1.PodList {
-	selector := labels.SelectorFromSet(labels.Set(labelsMap))
-	allPods, err := c.CoreV1().Pods(ns).List(metav1.ListOptions{LabelSelector: selector.String()})
-	framework.ExpectNoError(err)
-	return allPods
-}
-
-func runAndKeepPodWithLabelAndGetNodeName(f *framework.Framework) (string, string) {
-	// launch a pod to find a node which can launch a pod. We intentionally do
-	// not just take the node list and choose the first of them. Depending on the
-	// cluster and the scheduler it might be that a "normal" pod cannot be
-	// scheduled onto it.
-	ginkgo.By("Trying to launch a pod with a label to get a node which can launch it.")
-	pod := runPausePod(f, pausePodConfig{
-		Name:   "with-label-" + string(uuid.NewUUID()),
-		Labels: map[string]string{"security": "S1"},
-	})
-	return pod.Spec.NodeName, pod.Name
 }
 
 // GetNodeThatCanRunPod trying to launch a pod without a label to get a node which can launch it
@@ -811,7 +760,7 @@ func CreateHostPortPods(f *framework.Framework, id string, replicas int, expectR
 		Replicas:  replicas,
 		HostPorts: map[string]int{"port1": 4321},
 	}
-	err := framework.RunRC(*config)
+	err := e2erc.RunRC(*config)
 	if expectRunning {
 		framework.ExpectNoError(err)
 	}
@@ -831,7 +780,7 @@ func CreateNodeSelectorPods(f *framework.Framework, id string, replicas int, nod
 		HostPorts:    map[string]int{"port1": 4321},
 		NodeSelector: nodeSelector,
 	}
-	err := framework.RunRC(*config)
+	err := e2erc.RunRC(*config)
 	if expectRunning {
 		return err
 	}
@@ -840,7 +789,7 @@ func CreateNodeSelectorPods(f *framework.Framework, id string, replicas int, nod
 
 // create pod which using hostport on the specified node according to the nodeSelector
 func createHostPortPodOnNode(f *framework.Framework, podName, ns, hostIP string, port int32, protocol v1.Protocol, nodeSelector map[string]string, expectScheduled bool) {
-	hostIP = framework.TranslateIPv4ToIPv6(hostIP)
+	hostIP = translateIPv4ToIPv6(hostIP)
 	createPausePod(f, pausePodConfig{
 		Name: podName,
 		Ports: []v1.ContainerPort{
@@ -858,4 +807,37 @@ func createHostPortPodOnNode(f *framework.Framework, podName, ns, hostIP string,
 	if expectScheduled {
 		framework.ExpectNoError(err)
 	}
+}
+
+// translateIPv4ToIPv6 maps an IPv4 address into a valid IPv6 address
+// adding the well known prefix "0::ffff:" https://tools.ietf.org/html/rfc2765
+// if the ip is IPv4 and the cluster IPFamily is IPv6, otherwise returns the same ip
+func translateIPv4ToIPv6(ip string) string {
+	if framework.TestContext.IPFamily == "ipv6" && !k8utilnet.IsIPv6String(ip) && ip != "" {
+		ip = "0::ffff:" + ip
+	}
+	return ip
+}
+
+// GetPodsScheduled returns a number of currently scheduled and not scheduled Pods.
+func GetPodsScheduled(masterNodes sets.String, pods *v1.PodList) (scheduledPods, notScheduledPods []v1.Pod) {
+	for _, pod := range pods.Items {
+		if !masterNodes.Has(pod.Spec.NodeName) {
+			if pod.Spec.NodeName != "" {
+				_, scheduledCondition := podutil.GetPodCondition(&pod.Status, v1.PodScheduled)
+				framework.ExpectEqual(scheduledCondition != nil, true)
+				framework.ExpectEqual(scheduledCondition.Status, v1.ConditionTrue)
+				scheduledPods = append(scheduledPods, pod)
+			} else {
+				_, scheduledCondition := podutil.GetPodCondition(&pod.Status, v1.PodScheduled)
+				framework.ExpectEqual(scheduledCondition != nil, true)
+				framework.ExpectEqual(scheduledCondition.Status, v1.ConditionFalse)
+				if scheduledCondition.Reason == "Unschedulable" {
+
+					notScheduledPods = append(notScheduledPods, pod)
+				}
+			}
+		}
+	}
+	return
 }

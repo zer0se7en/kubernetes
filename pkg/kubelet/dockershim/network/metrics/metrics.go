@@ -20,8 +20,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-
 	"k8s.io/component-base/metrics"
 	"k8s.io/component-base/metrics/legacyregistry"
 )
@@ -46,7 +44,7 @@ var (
 			Subsystem:      kubeletSubsystem,
 			Name:           NetworkPluginOperationsLatencyKey,
 			Help:           "Latency in seconds of network plugin operations. Broken down by operation type.",
-			Buckets:        prometheus.DefBuckets,
+			Buckets:        metrics.DefBuckets,
 			StabilityLevel: metrics.ALPHA,
 		},
 		[]string{"operation_type"},
@@ -56,10 +54,11 @@ var (
 	// type.
 	DeprecatedNetworkPluginOperationsLatency = metrics.NewSummaryVec(
 		&metrics.SummaryOpts{
-			Subsystem:      kubeletSubsystem,
-			Name:           DeprecatedNetworkPluginOperationsLatencyKey,
-			Help:           "(Deprecated) Latency in microseconds of network plugin operations. Broken down by operation type.",
-			StabilityLevel: metrics.ALPHA,
+			Subsystem:         kubeletSubsystem,
+			Name:              DeprecatedNetworkPluginOperationsLatencyKey,
+			Help:              "Latency in microseconds of network plugin operations. Broken down by operation type.",
+			StabilityLevel:    metrics.ALPHA,
+			DeprecatedVersion: "1.14.0",
 		},
 		[]string{"operation_type"},
 	)

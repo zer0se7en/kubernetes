@@ -32,6 +32,7 @@ import (
 	"k8s.io/kubernetes/pkg/client/conditions"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2edeploy "k8s.io/kubernetes/test/e2e/framework/deployment"
+	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2epv "k8s.io/kubernetes/test/e2e/framework/pv"
 	"k8s.io/kubernetes/test/e2e/storage/testsuites"
@@ -42,7 +43,6 @@ var _ = utils.SIGDescribe("Mounted volume expand", func() {
 	var (
 		c                 clientset.Interface
 		ns                string
-		err               error
 		pvc               *v1.PersistentVolumeClaim
 		resizableSc       *storagev1.StorageClass
 		nodeName          string
@@ -59,12 +59,9 @@ var _ = utils.SIGDescribe("Mounted volume expand", func() {
 		ns = f.Namespace.Name
 		framework.ExpectNoError(framework.WaitForAllNodesSchedulable(c, framework.TestContext.NodeSchedulableTimeout))
 
-		nodeList := framework.GetReadySchedulableNodesOrDie(f.ClientSet)
-		if len(nodeList.Items) != 0 {
-			nodeName = nodeList.Items[0].Name
-		} else {
-			framework.Failf("Unable to find ready and schedulable Node")
-		}
+		node, err := e2enode.GetRandomReadySchedulableNode(f.ClientSet)
+		framework.ExpectNoError(err)
+		nodeName = node.Name
 
 		nodeKey = "mounted_volume_expand"
 
@@ -84,7 +81,7 @@ var _ = utils.SIGDescribe("Mounted volume expand", func() {
 		}
 		resizableSc, err = c.StorageV1().StorageClasses().Create(newStorageClass(test, ns, "resizing"))
 		framework.ExpectNoError(err, "Error creating resizable storage class")
-		gomega.Expect(*resizableSc.AllowVolumeExpansion).To(gomega.BeTrue())
+		framework.ExpectEqual(*resizableSc.AllowVolumeExpansion, true)
 
 		pvc = e2epv.MakePersistentVolumeClaim(e2epv.PersistentVolumeClaimConfig{
 			ClaimSize:        test.ClaimSize,
@@ -148,6 +145,7 @@ var _ = utils.SIGDescribe("Mounted volume expand", func() {
 
 		ginkgo.By("Getting a pod from deployment")
 		podList, err := e2edeploy.GetPodsForDeployment(c, deployment)
+		framework.ExpectNoError(err, "While getting pods from deployment")
 		gomega.Expect(podList.Items).NotTo(gomega.BeEmpty())
 		pod := podList.Items[0]
 
@@ -180,7 +178,6 @@ func waitForDeploymentToRecreatePod(client clientset.Interface, deployment *apps
 			case v1.PodFailed, v1.PodSucceeded:
 				return false, conditions.ErrPodCompleted
 			}
-			return false, nil
 		}
 		return false, err
 	})

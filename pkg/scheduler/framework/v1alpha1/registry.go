@@ -29,7 +29,7 @@ type PluginFactory = func(configuration *runtime.Unknown, f FrameworkHandle) (Pl
 
 // DecodeInto decodes configuration whose type is *runtime.Unknown to the interface into.
 func DecodeInto(configuration *runtime.Unknown, into interface{}) error {
-	if configuration == nil {
+	if configuration == nil || configuration.Raw == nil {
 		return nil
 	}
 
@@ -66,5 +66,15 @@ func (r Registry) Unregister(name string) error {
 		return fmt.Errorf("no plugin named %v exists", name)
 	}
 	delete(r, name)
+	return nil
+}
+
+// Merge merges the provided registry to the current one.
+func (r Registry) Merge(in Registry) error {
+	for name, factory := range in {
+		if err := r.Register(name, factory); err != nil {
+			return err
+		}
+	}
 	return nil
 }

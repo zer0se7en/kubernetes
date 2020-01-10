@@ -91,6 +91,7 @@ func enforceRequirements(flags *applyPlanFlags, dryRun bool, newK8sVersion strin
 
 	var cfg *kubeadmapi.InitConfiguration
 	if flags.cfgPath != "" {
+		klog.Warning("WARNING: Usage of the --config flag for reconfiguring the cluster during upgrade is not recommended!")
 		cfg, err = configutil.LoadInitConfigurationFromFile(flags.cfgPath)
 	} else {
 		cfg, err = configutil.FetchInitConfigurationFromCluster(client, os.Stdout, "upgrade/config", false)
@@ -125,7 +126,7 @@ func enforceRequirements(flags *applyPlanFlags, dryRun bool, newK8sVersion strin
 	}
 
 	// Run healthchecks against the cluster
-	if err := upgrade.CheckClusterHealth(client, ignorePreflightErrorsSet); err != nil {
+	if err := upgrade.CheckClusterHealth(client, &cfg.ClusterConfiguration, ignorePreflightErrorsSet); err != nil {
 		return nil, nil, nil, errors.Wrap(err, "[upgrade/health] FATAL")
 	}
 
@@ -156,7 +157,7 @@ func enforceRequirements(flags *applyPlanFlags, dryRun bool, newK8sVersion strin
 	}
 
 	// Use a real version getter interface that queries the API server, the kubeadm client and the Kubernetes CI system for latest versions
-	return client, upgrade.NewOfflineVersionGetter(upgrade.NewKubeVersionGetter(client, os.Stdout), newK8sVersion), cfg, nil
+	return client, upgrade.NewOfflineVersionGetter(upgrade.NewKubeVersionGetter(client), newK8sVersion), cfg, nil
 }
 
 // printConfiguration prints the external version of the API to yaml

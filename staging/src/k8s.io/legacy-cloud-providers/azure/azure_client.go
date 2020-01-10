@@ -26,12 +26,14 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-07-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2019-06-01/network"
-	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2019-04-01/storage"
+	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2019-06-01/storage"
 	"github.com/Azure/go-autorest/autorest"
-	"github.com/Azure/go-autorest/autorest/adal"
 
 	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/klog"
+	azclients "k8s.io/legacy-cloud-providers/azure/clients"
+	"k8s.io/legacy-cloud-providers/azure/metrics"
+	"k8s.io/legacy-cloud-providers/azure/retry"
 )
 
 const (
@@ -41,123 +43,107 @@ const (
 )
 
 // Helpers for rate limiting error/error channel creation
-func createRateLimitErr(isWrite bool, opName string) error {
+func createRateLimitErr(isWrite bool, opName string) *retry.Error {
 	opType := "read"
 	if isWrite {
 		opType = "write"
 	}
-	return fmt.Errorf("azure - cloud provider rate limited(%s) for operation:%s", opType, opName)
+	return retry.GetRetriableError(fmt.Errorf("azure - cloud provider rate limited(%s) for operation:%s", opType, opName))
 }
 
 // VirtualMachinesClient defines needed functions for azure compute.VirtualMachinesClient
 type VirtualMachinesClient interface {
-	CreateOrUpdate(ctx context.Context, resourceGroupName string, VMName string, parameters compute.VirtualMachine, source string) (resp *http.Response, err error)
-	Update(ctx context.Context, resourceGroupName string, VMName string, parameters compute.VirtualMachineUpdate, source string) (resp *http.Response, err error)
-	Get(ctx context.Context, resourceGroupName string, VMName string, expand compute.InstanceViewTypes) (result compute.VirtualMachine, err error)
-	List(ctx context.Context, resourceGroupName string) (result []compute.VirtualMachine, err error)
+	CreateOrUpdate(ctx context.Context, resourceGroupName string, VMName string, parameters compute.VirtualMachine, source string) *retry.Error
+	Update(ctx context.Context, resourceGroupName string, VMName string, parameters compute.VirtualMachineUpdate, source string) *retry.Error
+	Get(ctx context.Context, resourceGroupName string, VMName string, expand compute.InstanceViewTypes) (result compute.VirtualMachine, rerr *retry.Error)
+	List(ctx context.Context, resourceGroupName string) (result []compute.VirtualMachine, rerr *retry.Error)
 }
 
 // InterfacesClient defines needed functions for azure network.InterfacesClient
 type InterfacesClient interface {
-	CreateOrUpdate(ctx context.Context, resourceGroupName string, networkInterfaceName string, parameters network.Interface) (resp *http.Response, err error)
-	Get(ctx context.Context, resourceGroupName string, networkInterfaceName string, expand string) (result network.Interface, err error)
-	GetVirtualMachineScaleSetNetworkInterface(ctx context.Context, resourceGroupName string, virtualMachineScaleSetName string, virtualmachineIndex string, networkInterfaceName string, expand string) (result network.Interface, err error)
+	CreateOrUpdate(ctx context.Context, resourceGroupName string, networkInterfaceName string, parameters network.Interface) *retry.Error
+	Get(ctx context.Context, resourceGroupName string, networkInterfaceName string, expand string) (result network.Interface, rerr *retry.Error)
+	GetVirtualMachineScaleSetNetworkInterface(ctx context.Context, resourceGroupName string, virtualMachineScaleSetName string, virtualmachineIndex string, networkInterfaceName string, expand string) (result network.Interface, rerr *retry.Error)
 }
 
 // LoadBalancersClient defines needed functions for azure network.LoadBalancersClient
 type LoadBalancersClient interface {
-	CreateOrUpdate(ctx context.Context, resourceGroupName string, loadBalancerName string, parameters network.LoadBalancer, etag string) (resp *http.Response, err error)
-	Delete(ctx context.Context, resourceGroupName string, loadBalancerName string) (resp *http.Response, err error)
-	Get(ctx context.Context, resourceGroupName string, loadBalancerName string, expand string) (result network.LoadBalancer, err error)
-	List(ctx context.Context, resourceGroupName string) (result []network.LoadBalancer, err error)
+	CreateOrUpdate(ctx context.Context, resourceGroupName string, loadBalancerName string, parameters network.LoadBalancer, etag string) *retry.Error
+	Delete(ctx context.Context, resourceGroupName string, loadBalancerName string) *retry.Error
+	Get(ctx context.Context, resourceGroupName string, loadBalancerName string, expand string) (result network.LoadBalancer, rerr *retry.Error)
+	List(ctx context.Context, resourceGroupName string) (result []network.LoadBalancer, rerr *retry.Error)
 }
 
 // PublicIPAddressesClient defines needed functions for azure network.PublicIPAddressesClient
 type PublicIPAddressesClient interface {
-	CreateOrUpdate(ctx context.Context, resourceGroupName string, publicIPAddressName string, parameters network.PublicIPAddress) (resp *http.Response, err error)
-	Delete(ctx context.Context, resourceGroupName string, publicIPAddressName string) (resp *http.Response, err error)
-	Get(ctx context.Context, resourceGroupName string, publicIPAddressName string, expand string) (result network.PublicIPAddress, err error)
-	GetVirtualMachineScaleSetPublicIPAddress(ctx context.Context, resourceGroupName string, virtualMachineScaleSetName string, virtualmachineIndex string, networkInterfaceName string, IPConfigurationName string, publicIPAddressName string, expand string) (result network.PublicIPAddress, err error)
-	List(ctx context.Context, resourceGroupName string) (result []network.PublicIPAddress, err error)
+	CreateOrUpdate(ctx context.Context, resourceGroupName string, publicIPAddressName string, parameters network.PublicIPAddress) *retry.Error
+	Delete(ctx context.Context, resourceGroupName string, publicIPAddressName string) *retry.Error
+	Get(ctx context.Context, resourceGroupName string, publicIPAddressName string, expand string) (result network.PublicIPAddress, rerr *retry.Error)
+	GetVirtualMachineScaleSetPublicIPAddress(ctx context.Context, resourceGroupName string, virtualMachineScaleSetName string, virtualmachineIndex string, networkInterfaceName string, IPConfigurationName string, publicIPAddressName string, expand string) (result network.PublicIPAddress, rerr *retry.Error)
+	List(ctx context.Context, resourceGroupName string) (result []network.PublicIPAddress, rerr *retry.Error)
 }
 
 // SubnetsClient defines needed functions for azure network.SubnetsClient
 type SubnetsClient interface {
-	CreateOrUpdate(ctx context.Context, resourceGroupName string, virtualNetworkName string, subnetName string, subnetParameters network.Subnet) (resp *http.Response, err error)
-	Delete(ctx context.Context, resourceGroupName string, virtualNetworkName string, subnetName string) (resp *http.Response, err error)
-	Get(ctx context.Context, resourceGroupName string, virtualNetworkName string, subnetName string, expand string) (result network.Subnet, err error)
-	List(ctx context.Context, resourceGroupName string, virtualNetworkName string) (result []network.Subnet, err error)
+	CreateOrUpdate(ctx context.Context, resourceGroupName string, virtualNetworkName string, subnetName string, subnetParameters network.Subnet) *retry.Error
+	Delete(ctx context.Context, resourceGroupName string, virtualNetworkName string, subnetName string) *retry.Error
+	Get(ctx context.Context, resourceGroupName string, virtualNetworkName string, subnetName string, expand string) (result network.Subnet, rerr *retry.Error)
+	List(ctx context.Context, resourceGroupName string, virtualNetworkName string) (result []network.Subnet, rerr *retry.Error)
 }
 
 // SecurityGroupsClient defines needed functions for azure network.SecurityGroupsClient
 type SecurityGroupsClient interface {
-	CreateOrUpdate(ctx context.Context, resourceGroupName string, networkSecurityGroupName string, parameters network.SecurityGroup, etag string) (resp *http.Response, err error)
-	Delete(ctx context.Context, resourceGroupName string, networkSecurityGroupName string) (resp *http.Response, err error)
-	Get(ctx context.Context, resourceGroupName string, networkSecurityGroupName string, expand string) (result network.SecurityGroup, err error)
-	List(ctx context.Context, resourceGroupName string) (result []network.SecurityGroup, err error)
+	CreateOrUpdate(ctx context.Context, resourceGroupName string, networkSecurityGroupName string, parameters network.SecurityGroup, etag string) *retry.Error
+	Delete(ctx context.Context, resourceGroupName string, networkSecurityGroupName string) *retry.Error
+	Get(ctx context.Context, resourceGroupName string, networkSecurityGroupName string, expand string) (result network.SecurityGroup, rerr *retry.Error)
+	List(ctx context.Context, resourceGroupName string) (result []network.SecurityGroup, rerr *retry.Error)
 }
 
 // VirtualMachineScaleSetsClient defines needed functions for azure compute.VirtualMachineScaleSetsClient
 type VirtualMachineScaleSetsClient interface {
-	Get(ctx context.Context, resourceGroupName string, VMScaleSetName string) (result compute.VirtualMachineScaleSet, err error)
-	List(ctx context.Context, resourceGroupName string) (result []compute.VirtualMachineScaleSet, err error)
-	CreateOrUpdate(ctx context.Context, resourceGroupName string, VMScaleSetName string, parameters compute.VirtualMachineScaleSet) (resp *http.Response, err error)
+	Get(ctx context.Context, resourceGroupName string, VMScaleSetName string) (result compute.VirtualMachineScaleSet, rerr *retry.Error)
+	List(ctx context.Context, resourceGroupName string) (result []compute.VirtualMachineScaleSet, rerr *retry.Error)
+	CreateOrUpdate(ctx context.Context, resourceGroupName string, VMScaleSetName string, parameters compute.VirtualMachineScaleSet) *retry.Error
 }
 
 // VirtualMachineScaleSetVMsClient defines needed functions for azure compute.VirtualMachineScaleSetVMsClient
 type VirtualMachineScaleSetVMsClient interface {
-	Get(ctx context.Context, resourceGroupName string, VMScaleSetName string, instanceID string) (result compute.VirtualMachineScaleSetVM, err error)
-	GetInstanceView(ctx context.Context, resourceGroupName string, VMScaleSetName string, instanceID string) (result compute.VirtualMachineScaleSetVMInstanceView, err error)
-	List(ctx context.Context, resourceGroupName string, virtualMachineScaleSetName string, filter string, selectParameter string, expand string) (result []compute.VirtualMachineScaleSetVM, err error)
-	Update(ctx context.Context, resourceGroupName string, VMScaleSetName string, instanceID string, parameters compute.VirtualMachineScaleSetVM, source string) (resp *http.Response, err error)
+	Get(ctx context.Context, resourceGroupName string, VMScaleSetName string, instanceID string, expand compute.InstanceViewTypes) (result compute.VirtualMachineScaleSetVM, rerr *retry.Error)
+	List(ctx context.Context, resourceGroupName string, virtualMachineScaleSetName string, expand string) (result []compute.VirtualMachineScaleSetVM, rerr *retry.Error)
+	Update(ctx context.Context, resourceGroupName string, VMScaleSetName string, instanceID string, parameters compute.VirtualMachineScaleSetVM, source string) *retry.Error
 }
 
 // RoutesClient defines needed functions for azure network.RoutesClient
 type RoutesClient interface {
-	CreateOrUpdate(ctx context.Context, resourceGroupName string, routeTableName string, routeName string, routeParameters network.Route, etag string) (resp *http.Response, err error)
-	Delete(ctx context.Context, resourceGroupName string, routeTableName string, routeName string) (resp *http.Response, err error)
+	CreateOrUpdate(ctx context.Context, resourceGroupName string, routeTableName string, routeName string, routeParameters network.Route, etag string) *retry.Error
+	Delete(ctx context.Context, resourceGroupName string, routeTableName string, routeName string) *retry.Error
 }
 
 // RouteTablesClient defines needed functions for azure network.RouteTablesClient
 type RouteTablesClient interface {
-	CreateOrUpdate(ctx context.Context, resourceGroupName string, routeTableName string, parameters network.RouteTable, etag string) (resp *http.Response, err error)
-	Get(ctx context.Context, resourceGroupName string, routeTableName string, expand string) (result network.RouteTable, err error)
+	CreateOrUpdate(ctx context.Context, resourceGroupName string, routeTableName string, parameters network.RouteTable, etag string) *retry.Error
+	Get(ctx context.Context, resourceGroupName string, routeTableName string, expand string) (result network.RouteTable, rerr *retry.Error)
 }
 
 // StorageAccountClient defines needed functions for azure storage.AccountsClient
 type StorageAccountClient interface {
-	Create(ctx context.Context, resourceGroupName string, accountName string, parameters storage.AccountCreateParameters) (result *http.Response, err error)
-	Delete(ctx context.Context, resourceGroupName string, accountName string) (result autorest.Response, err error)
-	ListKeys(ctx context.Context, resourceGroupName string, accountName string) (result storage.AccountListKeysResult, err error)
-	ListByResourceGroup(ctx context.Context, resourceGroupName string) (result storage.AccountListResult, err error)
-	GetProperties(ctx context.Context, resourceGroupName string, accountName string) (result storage.Account, err error)
+	Create(ctx context.Context, resourceGroupName string, accountName string, parameters storage.AccountCreateParameters) *retry.Error
+	Delete(ctx context.Context, resourceGroupName string, accountName string) *retry.Error
+	ListKeys(ctx context.Context, resourceGroupName string, accountName string) (result storage.AccountListKeysResult, rerr *retry.Error)
+	ListByResourceGroup(ctx context.Context, resourceGroupName string) (result storage.AccountListResult, rerr *retry.Error)
+	GetProperties(ctx context.Context, resourceGroupName string, accountName string) (result storage.Account, rerr *retry.Error)
 }
 
 // DisksClient defines needed functions for azure compute.DisksClient
 type DisksClient interface {
-	CreateOrUpdate(ctx context.Context, resourceGroupName string, diskName string, diskParameter compute.Disk) (resp *http.Response, err error)
-	Delete(ctx context.Context, resourceGroupName string, diskName string) (resp *http.Response, err error)
-	Get(ctx context.Context, resourceGroupName string, diskName string) (result compute.Disk, err error)
+	CreateOrUpdate(ctx context.Context, resourceGroupName string, diskName string, diskParameter compute.Disk) *retry.Error
+	Delete(ctx context.Context, resourceGroupName string, diskName string) *retry.Error
+	Get(ctx context.Context, resourceGroupName string, diskName string) (result compute.Disk, rerr *retry.Error)
 }
 
 // VirtualMachineSizesClient defines needed functions for azure compute.VirtualMachineSizesClient
 type VirtualMachineSizesClient interface {
-	List(ctx context.Context, location string) (result compute.VirtualMachineSizeListResult, err error)
-}
-
-// azClientConfig contains all essential information to create an Azure client.
-type azClientConfig struct {
-	subscriptionID          string
-	resourceManagerEndpoint string
-	servicePrincipalToken   *adal.ServicePrincipalToken
-	// ARM Rate limiting for GET vs PUT/POST
-	//Details: https://docs.microsoft.com/en-us/azure/azure-resource-manager/resource-manager-request-limits
-	rateLimiterReader flowcontrol.RateLimiter
-	rateLimiterWriter flowcontrol.RateLimiter
-
-	CloudProviderBackoffRetries    int
-	CloudProviderBackoffDuration   int
-	ShouldOmitCloudProviderBackoff bool
+	List(ctx context.Context, location string) (result compute.VirtualMachineSizeListResult, rerr *retry.Error)
 }
 
 // azVirtualMachinesClient implements VirtualMachinesClient.
@@ -171,10 +157,10 @@ func getContextWithCancel() (context.Context, context.CancelFunc) {
 	return context.WithCancel(context.Background())
 }
 
-func newAzVirtualMachinesClient(config *azClientConfig) *azVirtualMachinesClient {
-	virtualMachinesClient := compute.NewVirtualMachinesClient(config.subscriptionID)
-	virtualMachinesClient.BaseURI = config.resourceManagerEndpoint
-	virtualMachinesClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
+func newAzVirtualMachinesClient(config *azclients.ClientConfig) *azVirtualMachinesClient {
+	virtualMachinesClient := compute.NewVirtualMachinesClient(config.SubscriptionID)
+	virtualMachinesClient.BaseURI = config.ResourceManagerEndpoint
+	virtualMachinesClient.Authorizer = autorest.NewBearerAuthorizer(config.ServicePrincipalToken)
 	virtualMachinesClient.PollingDelay = 5 * time.Second
 	if config.ShouldOmitCloudProviderBackoff {
 		virtualMachinesClient.RetryAttempts = config.CloudProviderBackoffRetries
@@ -182,20 +168,26 @@ func newAzVirtualMachinesClient(config *azClientConfig) *azVirtualMachinesClient
 	}
 	configureUserAgent(&virtualMachinesClient.Client)
 
+	klog.V(2).Infof("Azure VirtualMachinesClient (read ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPS,
+		config.RateLimitConfig.CloudProviderRateLimitBucket)
+	klog.V(2).Infof("Azure VirtualMachinesClient (write ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPSWrite,
+		config.RateLimitConfig.CloudProviderRateLimitBucketWrite)
+	rateLimiterReader, rateLimiterWriter := azclients.NewRateLimiter(config.RateLimitConfig)
 	return &azVirtualMachinesClient{
-		rateLimiterReader: config.rateLimiterReader,
-		rateLimiterWriter: config.rateLimiterWriter,
+		rateLimiterReader: rateLimiterReader,
+		rateLimiterWriter: rateLimiterWriter,
 		client:            virtualMachinesClient,
 	}
 }
 
-func (az *azVirtualMachinesClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, VMName string, parameters compute.VirtualMachine, source string) (resp *http.Response, err error) {
+func (az *azVirtualMachinesClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, VMName string, parameters compute.VirtualMachine, source string) *retry.Error {
 	// /* Write rate limiting */
-	mc := newMetricContext("vm", "create_or_update", resourceGroupName, az.client.SubscriptionID, source)
+	mc := metrics.NewMetricContext("vm", "create_or_update", resourceGroupName, az.client.SubscriptionID, source)
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "VMCreateOrUpdate")
-		return
+		return createRateLimitErr(true, "VMCreateOrUpdate")
 	}
 
 	klog.V(10).Infof("azVirtualMachinesClient.CreateOrUpdate(%q, %q): start", resourceGroupName, VMName)
@@ -205,21 +197,20 @@ func (az *azVirtualMachinesClient) CreateOrUpdate(ctx context.Context, resourceG
 
 	future, err := az.client.CreateOrUpdate(ctx, resourceGroupName, VMName, parameters)
 	if err != nil {
-		return future.Response(), err
+		return retry.GetError(future.Response(), err)
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
-	return future.Response(), err
+	return retry.GetError(future.Response(), err)
 }
 
-func (az *azVirtualMachinesClient) Update(ctx context.Context, resourceGroupName string, VMName string, parameters compute.VirtualMachineUpdate, source string) (resp *http.Response, err error) {
-	mc := newMetricContext("vm", "update", resourceGroupName, az.client.SubscriptionID, source)
+func (az *azVirtualMachinesClient) Update(ctx context.Context, resourceGroupName string, VMName string, parameters compute.VirtualMachineUpdate, source string) *retry.Error {
+	mc := metrics.NewMetricContext("vm", "update", resourceGroupName, az.client.SubscriptionID, source)
 	// /* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "VMUpdate")
-		return
+		return createRateLimitErr(true, "VMUpdate")
 	}
 
 	klog.V(10).Infof("azVirtualMachinesClient.Update(%q, %q): start", resourceGroupName, VMName)
@@ -229,19 +220,19 @@ func (az *azVirtualMachinesClient) Update(ctx context.Context, resourceGroupName
 
 	future, err := az.client.Update(ctx, resourceGroupName, VMName, parameters)
 	if err != nil {
-		return future.Response(), err
+		return retry.GetError(future.Response(), err)
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
-	return future.Response(), err
+	return retry.GetError(future.Response(), err)
 }
 
-func (az *azVirtualMachinesClient) Get(ctx context.Context, resourceGroupName string, VMName string, expand compute.InstanceViewTypes) (result compute.VirtualMachine, err error) {
-	mc := newMetricContext("vm", "get", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azVirtualMachinesClient) Get(ctx context.Context, resourceGroupName string, VMName string, expand compute.InstanceViewTypes) (result compute.VirtualMachine, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("vm", "get", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "VMGet")
+		rerr = createRateLimitErr(false, "VMGet")
 		return
 	}
 
@@ -250,16 +241,17 @@ func (az *azVirtualMachinesClient) Get(ctx context.Context, resourceGroupName st
 		klog.V(10).Infof("azVirtualMachinesClient.Get(%q, %q): end", resourceGroupName, VMName)
 	}()
 
+	var err error
 	result, err = az.client.Get(ctx, resourceGroupName, VMName, expand)
 	mc.Observe(err)
-	return
+	return result, retry.GetError(result.Response.Response, err)
 }
 
-func (az *azVirtualMachinesClient) List(ctx context.Context, resourceGroupName string) (result []compute.VirtualMachine, err error) {
-	mc := newMetricContext("vm", "list", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azVirtualMachinesClient) List(ctx context.Context, resourceGroupName string) (result []compute.VirtualMachine, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("vm", "list", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "VMList")
+		rerr = createRateLimitErr(false, "VMList")
 		return
 	}
 
@@ -271,13 +263,13 @@ func (az *azVirtualMachinesClient) List(ctx context.Context, resourceGroupName s
 	iterator, err := az.client.ListComplete(ctx, resourceGroupName)
 	mc.Observe(err)
 	if err != nil {
-		return nil, err
+		return nil, retry.GetRetriableError(err)
 	}
 
 	result = make([]compute.VirtualMachine, 0)
 	for ; iterator.NotDone(); err = iterator.Next() {
 		if err != nil {
-			return nil, err
+			return nil, retry.GetRetriableError(err)
 		}
 
 		result = append(result, iterator.Value())
@@ -293,10 +285,10 @@ type azInterfacesClient struct {
 	rateLimiterWriter flowcontrol.RateLimiter
 }
 
-func newAzInterfacesClient(config *azClientConfig) *azInterfacesClient {
-	interfacesClient := network.NewInterfacesClient(config.subscriptionID)
-	interfacesClient.BaseURI = config.resourceManagerEndpoint
-	interfacesClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
+func newAzInterfacesClient(config *azclients.ClientConfig) *azInterfacesClient {
+	interfacesClient := network.NewInterfacesClient(config.SubscriptionID)
+	interfacesClient.BaseURI = config.ResourceManagerEndpoint
+	interfacesClient.Authorizer = autorest.NewBearerAuthorizer(config.ServicePrincipalToken)
 	interfacesClient.PollingDelay = 5 * time.Second
 	if config.ShouldOmitCloudProviderBackoff {
 		interfacesClient.RetryAttempts = config.CloudProviderBackoffRetries
@@ -304,20 +296,26 @@ func newAzInterfacesClient(config *azClientConfig) *azInterfacesClient {
 	}
 	configureUserAgent(&interfacesClient.Client)
 
+	klog.V(2).Infof("Azure InterfacesClient (read ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPS,
+		config.RateLimitConfig.CloudProviderRateLimitBucket)
+	klog.V(2).Infof("Azure InterfacesClient (write ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPSWrite,
+		config.RateLimitConfig.CloudProviderRateLimitBucketWrite)
+	rateLimiterReader, rateLimiterWriter := azclients.NewRateLimiter(config.RateLimitConfig)
 	return &azInterfacesClient{
-		rateLimiterReader: config.rateLimiterReader,
-		rateLimiterWriter: config.rateLimiterWriter,
+		rateLimiterReader: rateLimiterReader,
+		rateLimiterWriter: rateLimiterWriter,
 		client:            interfacesClient,
 	}
 }
 
-func (az *azInterfacesClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, networkInterfaceName string, parameters network.Interface) (resp *http.Response, err error) {
-	mc := newMetricContext("interfaces", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azInterfacesClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, networkInterfaceName string, parameters network.Interface) *retry.Error {
+	mc := metrics.NewMetricContext("interfaces", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "NiCreateOrUpdate")
-		return
+		return createRateLimitErr(true, "NiCreateOrUpdate")
 	}
 
 	klog.V(10).Infof("azInterfacesClient.CreateOrUpdate(%q,%q): start", resourceGroupName, networkInterfaceName)
@@ -327,18 +325,18 @@ func (az *azInterfacesClient) CreateOrUpdate(ctx context.Context, resourceGroupN
 
 	future, err := az.client.CreateOrUpdate(ctx, resourceGroupName, networkInterfaceName, parameters)
 	if err != nil {
-		return future.Response(), mc.Observe(err)
+		return retry.GetError(future.Response(), mc.Observe(err))
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
+	return retry.GetError(future.Response(), mc.Observe(err))
 }
 
-func (az *azInterfacesClient) Get(ctx context.Context, resourceGroupName string, networkInterfaceName string, expand string) (result network.Interface, err error) {
-	mc := newMetricContext("interfaces", "get", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azInterfacesClient) Get(ctx context.Context, resourceGroupName string, networkInterfaceName string, expand string) (result network.Interface, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("interfaces", "get", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "NicGet")
+		rerr = createRateLimitErr(false, "NicGet")
 		return
 	}
 
@@ -347,16 +345,17 @@ func (az *azInterfacesClient) Get(ctx context.Context, resourceGroupName string,
 		klog.V(10).Infof("azInterfacesClient.Get(%q,%q): end", resourceGroupName, networkInterfaceName)
 	}()
 
+	var err error
 	result, err = az.client.Get(ctx, resourceGroupName, networkInterfaceName, expand)
 	mc.Observe(err)
-	return
+	return result, retry.GetError(result.Response.Response, err)
 }
 
-func (az *azInterfacesClient) GetVirtualMachineScaleSetNetworkInterface(ctx context.Context, resourceGroupName string, virtualMachineScaleSetName string, virtualmachineIndex string, networkInterfaceName string, expand string) (result network.Interface, err error) {
-	mc := newMetricContext("interfaces", "get_vmss_ni", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azInterfacesClient) GetVirtualMachineScaleSetNetworkInterface(ctx context.Context, resourceGroupName string, virtualMachineScaleSetName string, virtualmachineIndex string, networkInterfaceName string, expand string) (result network.Interface, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("interfaces", "get_vmss_ni", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "NicGetVirtualMachineScaleSetNetworkInterface")
+		rerr = createRateLimitErr(false, "NicGetVirtualMachineScaleSetNetworkInterface")
 		return
 	}
 
@@ -365,9 +364,10 @@ func (az *azInterfacesClient) GetVirtualMachineScaleSetNetworkInterface(ctx cont
 		klog.V(10).Infof("azInterfacesClient.GetVirtualMachineScaleSetNetworkInterface(%q,%q,%q,%q): end", resourceGroupName, virtualMachineScaleSetName, virtualmachineIndex, networkInterfaceName)
 	}()
 
+	var err error
 	result, err = az.client.GetVirtualMachineScaleSetNetworkInterface(ctx, resourceGroupName, virtualMachineScaleSetName, virtualmachineIndex, networkInterfaceName, expand)
 	mc.Observe(err)
-	return
+	return result, retry.GetError(result.Response.Response, err)
 }
 
 // azLoadBalancersClient implements LoadBalancersClient.
@@ -377,10 +377,10 @@ type azLoadBalancersClient struct {
 	rateLimiterWriter flowcontrol.RateLimiter
 }
 
-func newAzLoadBalancersClient(config *azClientConfig) *azLoadBalancersClient {
-	loadBalancerClient := network.NewLoadBalancersClient(config.subscriptionID)
-	loadBalancerClient.BaseURI = config.resourceManagerEndpoint
-	loadBalancerClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
+func newAzLoadBalancersClient(config *azclients.ClientConfig) *azLoadBalancersClient {
+	loadBalancerClient := network.NewLoadBalancersClient(config.SubscriptionID)
+	loadBalancerClient.BaseURI = config.ResourceManagerEndpoint
+	loadBalancerClient.Authorizer = autorest.NewBearerAuthorizer(config.ServicePrincipalToken)
 	loadBalancerClient.PollingDelay = 5 * time.Second
 	if config.ShouldOmitCloudProviderBackoff {
 		loadBalancerClient.RetryAttempts = config.CloudProviderBackoffRetries
@@ -388,20 +388,26 @@ func newAzLoadBalancersClient(config *azClientConfig) *azLoadBalancersClient {
 	}
 	configureUserAgent(&loadBalancerClient.Client)
 
+	klog.V(2).Infof("Azure LoadBalancersClient (read ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPS,
+		config.RateLimitConfig.CloudProviderRateLimitBucket)
+	klog.V(2).Infof("Azure LoadBalancersClient (write ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPSWrite,
+		config.RateLimitConfig.CloudProviderRateLimitBucketWrite)
+	rateLimiterReader, rateLimiterWriter := azclients.NewRateLimiter(config.RateLimitConfig)
 	return &azLoadBalancersClient{
-		rateLimiterReader: config.rateLimiterReader,
-		rateLimiterWriter: config.rateLimiterWriter,
+		rateLimiterReader: rateLimiterReader,
+		rateLimiterWriter: rateLimiterWriter,
 		client:            loadBalancerClient,
 	}
 }
 
-func (az *azLoadBalancersClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, loadBalancerName string, parameters network.LoadBalancer, etag string) (resp *http.Response, err error) {
-	mc := newMetricContext("load_balancers", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azLoadBalancersClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, loadBalancerName string, parameters network.LoadBalancer, etag string) *retry.Error {
+	mc := metrics.NewMetricContext("load_balancers", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "LBCreateOrUpdate")
-		return nil, err
+		return createRateLimitErr(true, "LBCreateOrUpdate")
 	}
 
 	klog.V(10).Infof("azLoadBalancersClient.CreateOrUpdate(%q,%q): start", resourceGroupName, loadBalancerName)
@@ -411,16 +417,16 @@ func (az *azLoadBalancersClient) CreateOrUpdate(ctx context.Context, resourceGro
 
 	req, err := az.createOrUpdatePreparer(ctx, resourceGroupName, loadBalancerName, parameters, etag)
 	if err != nil {
-		return nil, mc.Observe(err)
+		return retry.NewError(false, mc.Observe(err))
 	}
 
 	future, err := az.client.CreateOrUpdateSender(req)
 	if err != nil {
-		return future.Response(), mc.Observe(err)
+		return retry.GetError(future.Response(), mc.Observe(err))
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
+	return retry.GetError(future.Response(), mc.Observe(err))
 }
 
 // createOrUpdatePreparer prepares the CreateOrUpdate request.
@@ -450,13 +456,12 @@ func (az *azLoadBalancersClient) createOrUpdatePreparer(ctx context.Context, res
 	return preparer.Prepare((&http.Request{}).WithContext(ctx))
 }
 
-func (az *azLoadBalancersClient) Delete(ctx context.Context, resourceGroupName string, loadBalancerName string) (resp *http.Response, err error) {
-	mc := newMetricContext("load_balancers", "delete", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azLoadBalancersClient) Delete(ctx context.Context, resourceGroupName string, loadBalancerName string) *retry.Error {
+	mc := metrics.NewMetricContext("load_balancers", "delete", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "LBDelete")
-		return nil, err
+		return createRateLimitErr(true, "LBDelete")
 	}
 
 	klog.V(10).Infof("azLoadBalancersClient.Delete(%q,%q): start", resourceGroupName, loadBalancerName)
@@ -466,18 +471,18 @@ func (az *azLoadBalancersClient) Delete(ctx context.Context, resourceGroupName s
 
 	future, err := az.client.Delete(ctx, resourceGroupName, loadBalancerName)
 	if err != nil {
-		return future.Response(), mc.Observe(err)
+		return retry.GetStatusNotFoundAndForbiddenIgnoredError(future.Response(), mc.Observe(err))
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
+	return retry.GetStatusNotFoundAndForbiddenIgnoredError(future.Response(), mc.Observe(err))
 }
 
-func (az *azLoadBalancersClient) Get(ctx context.Context, resourceGroupName string, loadBalancerName string, expand string) (result network.LoadBalancer, err error) {
-	mc := newMetricContext("load_balancers", "get", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azLoadBalancersClient) Get(ctx context.Context, resourceGroupName string, loadBalancerName string, expand string) (result network.LoadBalancer, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("load_balancers", "get", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "LBGet")
+		rerr = createRateLimitErr(false, "LBGet")
 		return
 	}
 
@@ -486,17 +491,18 @@ func (az *azLoadBalancersClient) Get(ctx context.Context, resourceGroupName stri
 		klog.V(10).Infof("azLoadBalancersClient.Get(%q,%q): end", resourceGroupName, loadBalancerName)
 	}()
 
+	var err error
 	result, err = az.client.Get(ctx, resourceGroupName, loadBalancerName, expand)
 	mc.Observe(err)
-	return
+	return result, retry.GetError(result.Response.Response, err)
 }
 
-func (az *azLoadBalancersClient) List(ctx context.Context, resourceGroupName string) ([]network.LoadBalancer, error) {
-	mc := newMetricContext("load_balancers", "list", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azLoadBalancersClient) List(ctx context.Context, resourceGroupName string) ([]network.LoadBalancer, *retry.Error) {
+	mc := metrics.NewMetricContext("load_balancers", "list", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err := createRateLimitErr(false, "LBList")
-		return nil, err
+		rerr := createRateLimitErr(false, "LBList")
+		return nil, rerr
 	}
 
 	klog.V(10).Infof("azLoadBalancersClient.List(%q): start", resourceGroupName)
@@ -507,13 +513,13 @@ func (az *azLoadBalancersClient) List(ctx context.Context, resourceGroupName str
 	iterator, err := az.client.ListComplete(ctx, resourceGroupName)
 	mc.Observe(err)
 	if err != nil {
-		return nil, err
+		return nil, retry.GetRetriableError(err)
 	}
 
 	result := make([]network.LoadBalancer, 0)
 	for ; iterator.NotDone(); err = iterator.Next() {
 		if err != nil {
-			return nil, err
+			return nil, retry.GetRetriableError(err)
 		}
 
 		result = append(result, iterator.Value())
@@ -529,10 +535,10 @@ type azPublicIPAddressesClient struct {
 	rateLimiterWriter flowcontrol.RateLimiter
 }
 
-func newAzPublicIPAddressesClient(config *azClientConfig) *azPublicIPAddressesClient {
-	publicIPAddressClient := network.NewPublicIPAddressesClient(config.subscriptionID)
-	publicIPAddressClient.BaseURI = config.resourceManagerEndpoint
-	publicIPAddressClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
+func newAzPublicIPAddressesClient(config *azclients.ClientConfig) *azPublicIPAddressesClient {
+	publicIPAddressClient := network.NewPublicIPAddressesClient(config.SubscriptionID)
+	publicIPAddressClient.BaseURI = config.ResourceManagerEndpoint
+	publicIPAddressClient.Authorizer = autorest.NewBearerAuthorizer(config.ServicePrincipalToken)
 	publicIPAddressClient.PollingDelay = 5 * time.Second
 	if config.ShouldOmitCloudProviderBackoff {
 		publicIPAddressClient.RetryAttempts = config.CloudProviderBackoffRetries
@@ -540,20 +546,26 @@ func newAzPublicIPAddressesClient(config *azClientConfig) *azPublicIPAddressesCl
 	}
 	configureUserAgent(&publicIPAddressClient.Client)
 
+	klog.V(2).Infof("Azure PublicIPAddressesClient (read ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPS,
+		config.RateLimitConfig.CloudProviderRateLimitBucket)
+	klog.V(2).Infof("Azure PublicIPAddressesClient (write ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPSWrite,
+		config.RateLimitConfig.CloudProviderRateLimitBucketWrite)
+	rateLimiterReader, rateLimiterWriter := azclients.NewRateLimiter(config.RateLimitConfig)
 	return &azPublicIPAddressesClient{
-		rateLimiterReader: config.rateLimiterReader,
-		rateLimiterWriter: config.rateLimiterWriter,
+		rateLimiterReader: rateLimiterReader,
+		rateLimiterWriter: rateLimiterWriter,
 		client:            publicIPAddressClient,
 	}
 }
 
-func (az *azPublicIPAddressesClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, publicIPAddressName string, parameters network.PublicIPAddress) (resp *http.Response, err error) {
-	mc := newMetricContext("public_ip_addresses", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azPublicIPAddressesClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, publicIPAddressName string, parameters network.PublicIPAddress) *retry.Error {
+	mc := metrics.NewMetricContext("public_ip_addresses", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "PublicIPCreateOrUpdate")
-		return nil, err
+		return createRateLimitErr(true, "PublicIPCreateOrUpdate")
 	}
 
 	klog.V(10).Infof("azPublicIPAddressesClient.CreateOrUpdate(%q,%q): start", resourceGroupName, publicIPAddressName)
@@ -563,20 +575,19 @@ func (az *azPublicIPAddressesClient) CreateOrUpdate(ctx context.Context, resourc
 
 	future, err := az.client.CreateOrUpdate(ctx, resourceGroupName, publicIPAddressName, parameters)
 	if err != nil {
-		return future.Response(), mc.Observe(err)
+		return retry.GetError(future.Response(), mc.Observe(err))
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
+	return retry.GetError(future.Response(), mc.Observe(err))
 }
 
-func (az *azPublicIPAddressesClient) Delete(ctx context.Context, resourceGroupName string, publicIPAddressName string) (resp *http.Response, err error) {
-	mc := newMetricContext("public_ip_addresses", "delete", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azPublicIPAddressesClient) Delete(ctx context.Context, resourceGroupName string, publicIPAddressName string) *retry.Error {
+	mc := metrics.NewMetricContext("public_ip_addresses", "delete", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "PublicIPDelete")
-		return nil, err
+		return createRateLimitErr(true, "PublicIPDelete")
 	}
 
 	klog.V(10).Infof("azPublicIPAddressesClient.Delete(%q,%q): start", resourceGroupName, publicIPAddressName)
@@ -586,18 +597,18 @@ func (az *azPublicIPAddressesClient) Delete(ctx context.Context, resourceGroupNa
 
 	future, err := az.client.Delete(ctx, resourceGroupName, publicIPAddressName)
 	if err != nil {
-		return future.Response(), mc.Observe(err)
+		return retry.GetStatusNotFoundAndForbiddenIgnoredError(future.Response(), mc.Observe(err))
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
+	return retry.GetStatusNotFoundAndForbiddenIgnoredError(future.Response(), mc.Observe(err))
 }
 
-func (az *azPublicIPAddressesClient) Get(ctx context.Context, resourceGroupName string, publicIPAddressName string, expand string) (result network.PublicIPAddress, err error) {
-	mc := newMetricContext("public_ip_addresses", "get", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azPublicIPAddressesClient) Get(ctx context.Context, resourceGroupName string, publicIPAddressName string, expand string) (result network.PublicIPAddress, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("public_ip_addresses", "get", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "PublicIPGet")
+		rerr = createRateLimitErr(false, "PublicIPGet")
 		return
 	}
 
@@ -606,16 +617,17 @@ func (az *azPublicIPAddressesClient) Get(ctx context.Context, resourceGroupName 
 		klog.V(10).Infof("azPublicIPAddressesClient.Get(%q,%q): end", resourceGroupName, publicIPAddressName)
 	}()
 
+	var err error
 	result, err = az.client.Get(ctx, resourceGroupName, publicIPAddressName, expand)
 	mc.Observe(err)
-	return
+	return result, retry.GetError(result.Response.Response, err)
 }
 
-func (az *azPublicIPAddressesClient) GetVirtualMachineScaleSetPublicIPAddress(ctx context.Context, resourceGroupName string, virtualMachineScaleSetName string, virtualmachineIndex string, networkInterfaceName string, IPConfigurationName string, publicIPAddressName string, expand string) (result network.PublicIPAddress, err error) {
-	mc := newMetricContext("vmss_public_ip_addresses", "get", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azPublicIPAddressesClient) GetVirtualMachineScaleSetPublicIPAddress(ctx context.Context, resourceGroupName string, virtualMachineScaleSetName string, virtualmachineIndex string, networkInterfaceName string, IPConfigurationName string, publicIPAddressName string, expand string) (result network.PublicIPAddress, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("vmss_public_ip_addresses", "get", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "VMSSPublicIPGet")
+		rerr = createRateLimitErr(false, "VMSSPublicIPGet")
 		return
 	}
 
@@ -624,13 +636,14 @@ func (az *azPublicIPAddressesClient) GetVirtualMachineScaleSetPublicIPAddress(ct
 		klog.V(10).Infof("azPublicIPAddressesClient.GetVirtualMachineScaleSetPublicIPAddress(%q,%q): end", resourceGroupName, publicIPAddressName)
 	}()
 
+	var err error
 	result, err = az.client.GetVirtualMachineScaleSetPublicIPAddress(ctx, resourceGroupName, virtualMachineScaleSetName, virtualmachineIndex, networkInterfaceName, IPConfigurationName, publicIPAddressName, expand)
 	mc.Observe(err)
-	return
+	return result, retry.GetError(result.Response.Response, err)
 }
 
-func (az *azPublicIPAddressesClient) List(ctx context.Context, resourceGroupName string) ([]network.PublicIPAddress, error) {
-	mc := newMetricContext("public_ip_addresses", "list", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azPublicIPAddressesClient) List(ctx context.Context, resourceGroupName string) ([]network.PublicIPAddress, *retry.Error) {
+	mc := metrics.NewMetricContext("public_ip_addresses", "list", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
 		return nil, createRateLimitErr(false, "PublicIPList")
@@ -644,13 +657,13 @@ func (az *azPublicIPAddressesClient) List(ctx context.Context, resourceGroupName
 	iterator, err := az.client.ListComplete(ctx, resourceGroupName)
 	mc.Observe(err)
 	if err != nil {
-		return nil, err
+		return nil, retry.GetRetriableError(err)
 	}
 
 	result := make([]network.PublicIPAddress, 0)
 	for ; iterator.NotDone(); err = iterator.Next() {
 		if err != nil {
-			return nil, err
+			return nil, retry.GetRetriableError(err)
 		}
 
 		result = append(result, iterator.Value())
@@ -666,10 +679,10 @@ type azSubnetsClient struct {
 	rateLimiterWriter flowcontrol.RateLimiter
 }
 
-func newAzSubnetsClient(config *azClientConfig) *azSubnetsClient {
-	subnetsClient := network.NewSubnetsClient(config.subscriptionID)
-	subnetsClient.BaseURI = config.resourceManagerEndpoint
-	subnetsClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
+func newAzSubnetsClient(config *azclients.ClientConfig) *azSubnetsClient {
+	subnetsClient := network.NewSubnetsClient(config.SubscriptionID)
+	subnetsClient.BaseURI = config.ResourceManagerEndpoint
+	subnetsClient.Authorizer = autorest.NewBearerAuthorizer(config.ServicePrincipalToken)
 	subnetsClient.PollingDelay = 5 * time.Second
 	if config.ShouldOmitCloudProviderBackoff {
 		subnetsClient.RetryAttempts = config.CloudProviderBackoffRetries
@@ -677,20 +690,26 @@ func newAzSubnetsClient(config *azClientConfig) *azSubnetsClient {
 	}
 	configureUserAgent(&subnetsClient.Client)
 
+	klog.V(2).Infof("Azure SubnetsClient (read ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPS,
+		config.RateLimitConfig.CloudProviderRateLimitBucket)
+	klog.V(2).Infof("Azure SubnetsClient (write ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPSWrite,
+		config.RateLimitConfig.CloudProviderRateLimitBucketWrite)
+	rateLimiterReader, rateLimiterWriter := azclients.NewRateLimiter(config.RateLimitConfig)
 	return &azSubnetsClient{
 		client:            subnetsClient,
-		rateLimiterReader: config.rateLimiterReader,
-		rateLimiterWriter: config.rateLimiterWriter,
+		rateLimiterReader: rateLimiterReader,
+		rateLimiterWriter: rateLimiterWriter,
 	}
 }
 
-func (az *azSubnetsClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, virtualNetworkName string, subnetName string, subnetParameters network.Subnet) (resp *http.Response, err error) {
-	mc := newMetricContext("subnets", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azSubnetsClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, virtualNetworkName string, subnetName string, subnetParameters network.Subnet) *retry.Error {
+	mc := metrics.NewMetricContext("subnets", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "SubnetCreateOrUpdate")
-		return
+		return createRateLimitErr(true, "SubnetCreateOrUpdate")
 	}
 
 	klog.V(10).Infof("azSubnetsClient.CreateOrUpdate(%q,%q,%q): start", resourceGroupName, virtualNetworkName, subnetName)
@@ -700,20 +719,19 @@ func (az *azSubnetsClient) CreateOrUpdate(ctx context.Context, resourceGroupName
 
 	future, err := az.client.CreateOrUpdate(ctx, resourceGroupName, virtualNetworkName, subnetName, subnetParameters)
 	if err != nil {
-		return future.Response(), mc.Observe(err)
+		return retry.GetError(future.Response(), mc.Observe(err))
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
+	return retry.GetError(future.Response(), mc.Observe(err))
 }
 
-func (az *azSubnetsClient) Delete(ctx context.Context, resourceGroupName string, virtualNetworkName string, subnetName string) (resp *http.Response, err error) {
-	mc := newMetricContext("subnets", "delete", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azSubnetsClient) Delete(ctx context.Context, resourceGroupName string, virtualNetworkName string, subnetName string) *retry.Error {
+	mc := metrics.NewMetricContext("subnets", "delete", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "SubnetDelete")
-		return
+		return createRateLimitErr(true, "SubnetDelete")
 	}
 
 	klog.V(10).Infof("azSubnetsClient.Delete(%q,%q,%q): start", resourceGroupName, virtualNetworkName, subnetName)
@@ -723,18 +741,18 @@ func (az *azSubnetsClient) Delete(ctx context.Context, resourceGroupName string,
 
 	future, err := az.client.Delete(ctx, resourceGroupName, virtualNetworkName, subnetName)
 	if err != nil {
-		return future.Response(), mc.Observe(err)
+		return retry.GetStatusNotFoundAndForbiddenIgnoredError(future.Response(), mc.Observe(err))
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
+	return retry.GetStatusNotFoundAndForbiddenIgnoredError(future.Response(), mc.Observe(err))
 }
 
-func (az *azSubnetsClient) Get(ctx context.Context, resourceGroupName string, virtualNetworkName string, subnetName string, expand string) (result network.Subnet, err error) {
-	mc := newMetricContext("subnets", "get", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azSubnetsClient) Get(ctx context.Context, resourceGroupName string, virtualNetworkName string, subnetName string, expand string) (result network.Subnet, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("subnets", "get", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "SubnetGet")
+		rerr = createRateLimitErr(false, "SubnetGet")
 		return
 	}
 
@@ -743,13 +761,14 @@ func (az *azSubnetsClient) Get(ctx context.Context, resourceGroupName string, vi
 		klog.V(10).Infof("azSubnetsClient.Get(%q,%q,%q): end", resourceGroupName, virtualNetworkName, subnetName)
 	}()
 
+	var err error
 	result, err = az.client.Get(ctx, resourceGroupName, virtualNetworkName, subnetName, expand)
 	mc.Observe(err)
-	return
+	return result, retry.GetError(result.Response.Response, err)
 }
 
-func (az *azSubnetsClient) List(ctx context.Context, resourceGroupName string, virtualNetworkName string) ([]network.Subnet, error) {
-	mc := newMetricContext("subnets", "list", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azSubnetsClient) List(ctx context.Context, resourceGroupName string, virtualNetworkName string) ([]network.Subnet, *retry.Error) {
+	mc := metrics.NewMetricContext("subnets", "list", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
 		return nil, createRateLimitErr(false, "SubnetList")
@@ -763,13 +782,13 @@ func (az *azSubnetsClient) List(ctx context.Context, resourceGroupName string, v
 	iterator, err := az.client.ListComplete(ctx, resourceGroupName, virtualNetworkName)
 	mc.Observe(err)
 	if err != nil {
-		return nil, err
+		return nil, retry.GetRetriableError(err)
 	}
 
 	result := make([]network.Subnet, 0)
 	for ; iterator.NotDone(); err = iterator.Next() {
 		if err != nil {
-			return nil, err
+			return nil, retry.GetRetriableError(err)
 		}
 
 		result = append(result, iterator.Value())
@@ -785,10 +804,10 @@ type azSecurityGroupsClient struct {
 	rateLimiterWriter flowcontrol.RateLimiter
 }
 
-func newAzSecurityGroupsClient(config *azClientConfig) *azSecurityGroupsClient {
-	securityGroupsClient := network.NewSecurityGroupsClient(config.subscriptionID)
-	securityGroupsClient.BaseURI = config.resourceManagerEndpoint
-	securityGroupsClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
+func newAzSecurityGroupsClient(config *azclients.ClientConfig) *azSecurityGroupsClient {
+	securityGroupsClient := network.NewSecurityGroupsClient(config.SubscriptionID)
+	securityGroupsClient.BaseURI = config.ResourceManagerEndpoint
+	securityGroupsClient.Authorizer = autorest.NewBearerAuthorizer(config.ServicePrincipalToken)
 	securityGroupsClient.PollingDelay = 5 * time.Second
 	if config.ShouldOmitCloudProviderBackoff {
 		securityGroupsClient.RetryAttempts = config.CloudProviderBackoffRetries
@@ -796,20 +815,26 @@ func newAzSecurityGroupsClient(config *azClientConfig) *azSecurityGroupsClient {
 	}
 	configureUserAgent(&securityGroupsClient.Client)
 
+	klog.V(2).Infof("Azure SecurityGroupsClient (read ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPS,
+		config.RateLimitConfig.CloudProviderRateLimitBucket)
+	klog.V(2).Infof("Azure SecurityGroupsClient (write ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPSWrite,
+		config.RateLimitConfig.CloudProviderRateLimitBucketWrite)
+	rateLimiterReader, rateLimiterWriter := azclients.NewRateLimiter(config.RateLimitConfig)
 	return &azSecurityGroupsClient{
 		client:            securityGroupsClient,
-		rateLimiterReader: config.rateLimiterReader,
-		rateLimiterWriter: config.rateLimiterWriter,
+		rateLimiterReader: rateLimiterReader,
+		rateLimiterWriter: rateLimiterWriter,
 	}
 }
 
-func (az *azSecurityGroupsClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, networkSecurityGroupName string, parameters network.SecurityGroup, etag string) (resp *http.Response, err error) {
-	mc := newMetricContext("security_groups", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azSecurityGroupsClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, networkSecurityGroupName string, parameters network.SecurityGroup, etag string) *retry.Error {
+	mc := metrics.NewMetricContext("security_groups", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "NSGCreateOrUpdate")
-		return
+		return createRateLimitErr(true, "NSGCreateOrUpdate")
 	}
 
 	klog.V(10).Infof("azSecurityGroupsClient.CreateOrUpdate(%q,%q): start", resourceGroupName, networkSecurityGroupName)
@@ -819,16 +844,16 @@ func (az *azSecurityGroupsClient) CreateOrUpdate(ctx context.Context, resourceGr
 
 	req, err := az.createOrUpdatePreparer(ctx, resourceGroupName, networkSecurityGroupName, parameters, etag)
 	if err != nil {
-		return nil, mc.Observe(err)
+		return retry.NewError(false, mc.Observe(err))
 	}
 
 	future, err := az.client.CreateOrUpdateSender(req)
 	if err != nil {
-		return future.Response(), mc.Observe(err)
+		return retry.GetError(future.Response(), mc.Observe(err))
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
+	return retry.GetError(future.Response(), mc.Observe(err))
 }
 
 // createOrUpdatePreparer prepares the CreateOrUpdate request.
@@ -858,13 +883,12 @@ func (az *azSecurityGroupsClient) createOrUpdatePreparer(ctx context.Context, re
 	return preparer.Prepare((&http.Request{}).WithContext(ctx))
 }
 
-func (az *azSecurityGroupsClient) Delete(ctx context.Context, resourceGroupName string, networkSecurityGroupName string) (resp *http.Response, err error) {
-	mc := newMetricContext("security_groups", "delete", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azSecurityGroupsClient) Delete(ctx context.Context, resourceGroupName string, networkSecurityGroupName string) *retry.Error {
+	mc := metrics.NewMetricContext("security_groups", "delete", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "NSGDelete")
-		return
+		return createRateLimitErr(true, "NSGDelete")
 	}
 
 	klog.V(10).Infof("azSecurityGroupsClient.Delete(%q,%q): start", resourceGroupName, networkSecurityGroupName)
@@ -874,18 +898,18 @@ func (az *azSecurityGroupsClient) Delete(ctx context.Context, resourceGroupName 
 
 	future, err := az.client.Delete(ctx, resourceGroupName, networkSecurityGroupName)
 	if err != nil {
-		return future.Response(), mc.Observe(err)
+		return retry.GetStatusNotFoundAndForbiddenIgnoredError(future.Response(), mc.Observe(err))
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
+	return retry.GetStatusNotFoundAndForbiddenIgnoredError(future.Response(), mc.Observe(err))
 }
 
-func (az *azSecurityGroupsClient) Get(ctx context.Context, resourceGroupName string, networkSecurityGroupName string, expand string) (result network.SecurityGroup, err error) {
-	mc := newMetricContext("security_groups", "get", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azSecurityGroupsClient) Get(ctx context.Context, resourceGroupName string, networkSecurityGroupName string, expand string) (result network.SecurityGroup, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("security_groups", "get", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "NSGGet")
+		rerr = createRateLimitErr(false, "NSGGet")
 		return
 	}
 
@@ -894,13 +918,14 @@ func (az *azSecurityGroupsClient) Get(ctx context.Context, resourceGroupName str
 		klog.V(10).Infof("azSecurityGroupsClient.Get(%q,%q): end", resourceGroupName, networkSecurityGroupName)
 	}()
 
+	var err error
 	result, err = az.client.Get(ctx, resourceGroupName, networkSecurityGroupName, expand)
 	mc.Observe(err)
-	return
+	return result, retry.GetError(result.Response.Response, err)
 }
 
-func (az *azSecurityGroupsClient) List(ctx context.Context, resourceGroupName string) ([]network.SecurityGroup, error) {
-	mc := newMetricContext("security_groups", "list", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azSecurityGroupsClient) List(ctx context.Context, resourceGroupName string) ([]network.SecurityGroup, *retry.Error) {
+	mc := metrics.NewMetricContext("security_groups", "list", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
 		return nil, createRateLimitErr(false, "NSGList")
@@ -914,230 +939,19 @@ func (az *azSecurityGroupsClient) List(ctx context.Context, resourceGroupName st
 	iterator, err := az.client.ListComplete(ctx, resourceGroupName)
 	mc.Observe(err)
 	if err != nil {
-		return nil, err
+		return nil, retry.GetRetriableError(err)
 	}
 
 	result := make([]network.SecurityGroup, 0)
 	for ; iterator.NotDone(); err = iterator.Next() {
 		if err != nil {
-			return nil, err
+			return nil, retry.GetRetriableError(err)
 		}
 
 		result = append(result, iterator.Value())
 	}
 
 	return result, nil
-}
-
-// azVirtualMachineScaleSetsClient implements VirtualMachineScaleSetsClient.
-type azVirtualMachineScaleSetsClient struct {
-	client            compute.VirtualMachineScaleSetsClient
-	rateLimiterReader flowcontrol.RateLimiter
-	rateLimiterWriter flowcontrol.RateLimiter
-}
-
-func newAzVirtualMachineScaleSetsClient(config *azClientConfig) *azVirtualMachineScaleSetsClient {
-	virtualMachineScaleSetsClient := compute.NewVirtualMachineScaleSetsClient(config.subscriptionID)
-	virtualMachineScaleSetsClient.BaseURI = config.resourceManagerEndpoint
-	virtualMachineScaleSetsClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
-	virtualMachineScaleSetsClient.PollingDelay = 5 * time.Second
-	if config.ShouldOmitCloudProviderBackoff {
-		virtualMachineScaleSetsClient.RetryAttempts = config.CloudProviderBackoffRetries
-		virtualMachineScaleSetsClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
-	}
-	configureUserAgent(&virtualMachineScaleSetsClient.Client)
-
-	return &azVirtualMachineScaleSetsClient{
-		client:            virtualMachineScaleSetsClient,
-		rateLimiterReader: config.rateLimiterReader,
-		rateLimiterWriter: config.rateLimiterWriter,
-	}
-}
-
-func (az *azVirtualMachineScaleSetsClient) Get(ctx context.Context, resourceGroupName string, VMScaleSetName string) (result compute.VirtualMachineScaleSet, err error) {
-	mc := newMetricContext("vmss", "get", resourceGroupName, az.client.SubscriptionID, "")
-	if !az.rateLimiterReader.TryAccept() {
-		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "VMSSGet")
-		return
-	}
-
-	klog.V(10).Infof("azVirtualMachineScaleSetsClient.Get(%q,%q): start", resourceGroupName, VMScaleSetName)
-	defer func() {
-		klog.V(10).Infof("azVirtualMachineScaleSetsClient.Get(%q,%q): end", resourceGroupName, VMScaleSetName)
-	}()
-
-	result, err = az.client.Get(ctx, resourceGroupName, VMScaleSetName)
-	mc.Observe(err)
-	return
-}
-
-func (az *azVirtualMachineScaleSetsClient) List(ctx context.Context, resourceGroupName string) (result []compute.VirtualMachineScaleSet, err error) {
-	mc := newMetricContext("vmss", "list", resourceGroupName, az.client.SubscriptionID, "")
-	if !az.rateLimiterReader.TryAccept() {
-		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "VMSSList")
-		return
-	}
-
-	klog.V(10).Infof("azVirtualMachineScaleSetsClient.List(%q): start", resourceGroupName)
-	defer func() {
-		klog.V(10).Infof("azVirtualMachineScaleSetsClient.List(%q): end", resourceGroupName)
-	}()
-
-	iterator, err := az.client.ListComplete(ctx, resourceGroupName)
-	mc.Observe(err)
-	if err != nil {
-		return nil, err
-	}
-
-	result = make([]compute.VirtualMachineScaleSet, 0)
-	for ; iterator.NotDone(); err = iterator.Next() {
-		if err != nil {
-			return nil, err
-		}
-
-		result = append(result, iterator.Value())
-	}
-
-	return result, nil
-}
-
-func (az *azVirtualMachineScaleSetsClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, vmScaleSetName string, parameters compute.VirtualMachineScaleSet) (resp *http.Response, err error) {
-	mc := newMetricContext("vmss", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
-	/* Write rate limiting */
-	if !az.rateLimiterWriter.TryAccept() {
-		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "NiCreateOrUpdate")
-		return
-	}
-
-	klog.V(10).Infof("azVirtualMachineScaleSetsClient.CreateOrUpdate(%q,%q): start", resourceGroupName, vmScaleSetName)
-	defer func() {
-		klog.V(10).Infof("azVirtualMachineScaleSetsClient.CreateOrUpdate(%q,%q): end", resourceGroupName, vmScaleSetName)
-	}()
-
-	future, err := az.client.CreateOrUpdate(ctx, resourceGroupName, vmScaleSetName, parameters)
-	if err != nil {
-		return future.Response(), mc.Observe(err)
-	}
-
-	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
-}
-
-// azVirtualMachineScaleSetVMsClient implements VirtualMachineScaleSetVMsClient.
-type azVirtualMachineScaleSetVMsClient struct {
-	client            compute.VirtualMachineScaleSetVMsClient
-	rateLimiterReader flowcontrol.RateLimiter
-	rateLimiterWriter flowcontrol.RateLimiter
-}
-
-func newAzVirtualMachineScaleSetVMsClient(config *azClientConfig) *azVirtualMachineScaleSetVMsClient {
-	virtualMachineScaleSetVMsClient := compute.NewVirtualMachineScaleSetVMsClient(config.subscriptionID)
-	virtualMachineScaleSetVMsClient.BaseURI = config.resourceManagerEndpoint
-	virtualMachineScaleSetVMsClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
-	virtualMachineScaleSetVMsClient.PollingDelay = 5 * time.Second
-	if config.ShouldOmitCloudProviderBackoff {
-		virtualMachineScaleSetVMsClient.RetryAttempts = config.CloudProviderBackoffRetries
-		virtualMachineScaleSetVMsClient.RetryDuration = time.Duration(config.CloudProviderBackoffDuration) * time.Second
-	}
-	configureUserAgent(&virtualMachineScaleSetVMsClient.Client)
-
-	return &azVirtualMachineScaleSetVMsClient{
-		client:            virtualMachineScaleSetVMsClient,
-		rateLimiterReader: config.rateLimiterReader,
-		rateLimiterWriter: config.rateLimiterWriter,
-	}
-}
-
-func (az *azVirtualMachineScaleSetVMsClient) Get(ctx context.Context, resourceGroupName string, VMScaleSetName string, instanceID string) (result compute.VirtualMachineScaleSetVM, err error) {
-	mc := newMetricContext("vmssvm", "get", resourceGroupName, az.client.SubscriptionID, "")
-	if !az.rateLimiterReader.TryAccept() {
-		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "VMSSGet")
-		return
-	}
-
-	klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.Get(%q,%q,%q): start", resourceGroupName, VMScaleSetName, instanceID)
-	defer func() {
-		klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.Get(%q,%q,%q): end", resourceGroupName, VMScaleSetName, instanceID)
-	}()
-
-	result, err = az.client.Get(ctx, resourceGroupName, VMScaleSetName, instanceID)
-	mc.Observe(err)
-	return
-}
-
-func (az *azVirtualMachineScaleSetVMsClient) GetInstanceView(ctx context.Context, resourceGroupName string, VMScaleSetName string, instanceID string) (result compute.VirtualMachineScaleSetVMInstanceView, err error) {
-	mc := newMetricContext("vmssvm", "get_instance_view", resourceGroupName, az.client.SubscriptionID, "")
-	if !az.rateLimiterReader.TryAccept() {
-		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "VMSSGetInstanceView")
-		return
-	}
-
-	klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.GetInstanceView(%q,%q,%q): start", resourceGroupName, VMScaleSetName, instanceID)
-	defer func() {
-		klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.GetInstanceView(%q,%q,%q): end", resourceGroupName, VMScaleSetName, instanceID)
-	}()
-
-	result, err = az.client.GetInstanceView(ctx, resourceGroupName, VMScaleSetName, instanceID)
-	mc.Observe(err)
-	return
-}
-
-func (az *azVirtualMachineScaleSetVMsClient) List(ctx context.Context, resourceGroupName string, virtualMachineScaleSetName string, filter string, selectParameter string, expand string) (result []compute.VirtualMachineScaleSetVM, err error) {
-	mc := newMetricContext("vmssvm", "list", resourceGroupName, az.client.SubscriptionID, "")
-	if !az.rateLimiterReader.TryAccept() {
-		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "VMSSList")
-		return
-	}
-
-	klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.List(%q,%q,%q): start", resourceGroupName, virtualMachineScaleSetName, filter)
-	defer func() {
-		klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.List(%q,%q,%q): end", resourceGroupName, virtualMachineScaleSetName, filter)
-	}()
-
-	iterator, err := az.client.ListComplete(ctx, resourceGroupName, virtualMachineScaleSetName, filter, selectParameter, expand)
-	mc.Observe(err)
-	if err != nil {
-		return nil, err
-	}
-
-	result = make([]compute.VirtualMachineScaleSetVM, 0)
-	for ; iterator.NotDone(); err = iterator.Next() {
-		if err != nil {
-			return nil, err
-		}
-
-		result = append(result, iterator.Value())
-	}
-
-	return result, nil
-}
-
-func (az *azVirtualMachineScaleSetVMsClient) Update(ctx context.Context, resourceGroupName string, VMScaleSetName string, instanceID string, parameters compute.VirtualMachineScaleSetVM, source string) (resp *http.Response, err error) {
-	mc := newMetricContext("vmssvm", "create_or_update", resourceGroupName, az.client.SubscriptionID, source)
-	if !az.rateLimiterWriter.TryAccept() {
-		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "VMSSVMUpdate")
-		return
-	}
-
-	klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.Update(%q,%q,%q): start", resourceGroupName, VMScaleSetName, instanceID)
-	defer func() {
-		klog.V(10).Infof("azVirtualMachineScaleSetVMsClient.Update(%q,%q,%q): end", resourceGroupName, VMScaleSetName, instanceID)
-	}()
-
-	future, err := az.client.Update(ctx, resourceGroupName, VMScaleSetName, instanceID, parameters)
-	if err != nil {
-		return future.Response(), mc.Observe(err)
-	}
-
-	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
 }
 
 // azRoutesClient implements RoutesClient.
@@ -1147,10 +961,10 @@ type azRoutesClient struct {
 	rateLimiterWriter flowcontrol.RateLimiter
 }
 
-func newAzRoutesClient(config *azClientConfig) *azRoutesClient {
-	routesClient := network.NewRoutesClient(config.subscriptionID)
-	routesClient.BaseURI = config.resourceManagerEndpoint
-	routesClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
+func newAzRoutesClient(config *azclients.ClientConfig) *azRoutesClient {
+	routesClient := network.NewRoutesClient(config.SubscriptionID)
+	routesClient.BaseURI = config.ResourceManagerEndpoint
+	routesClient.Authorizer = autorest.NewBearerAuthorizer(config.ServicePrincipalToken)
 	routesClient.PollingDelay = 5 * time.Second
 	if config.ShouldOmitCloudProviderBackoff {
 		routesClient.RetryAttempts = config.CloudProviderBackoffRetries
@@ -1158,20 +972,26 @@ func newAzRoutesClient(config *azClientConfig) *azRoutesClient {
 	}
 	configureUserAgent(&routesClient.Client)
 
+	klog.V(2).Infof("Azure RoutesClient (read ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPS,
+		config.RateLimitConfig.CloudProviderRateLimitBucket)
+	klog.V(2).Infof("Azure RoutesClient (write ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPSWrite,
+		config.RateLimitConfig.CloudProviderRateLimitBucketWrite)
+	rateLimiterReader, rateLimiterWriter := azclients.NewRateLimiter(config.RateLimitConfig)
 	return &azRoutesClient{
 		client:            routesClient,
-		rateLimiterReader: config.rateLimiterReader,
-		rateLimiterWriter: config.rateLimiterWriter,
+		rateLimiterReader: rateLimiterReader,
+		rateLimiterWriter: rateLimiterWriter,
 	}
 }
 
-func (az *azRoutesClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, routeTableName string, routeName string, routeParameters network.Route, etag string) (resp *http.Response, err error) {
-	mc := newMetricContext("routes", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azRoutesClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, routeTableName string, routeName string, routeParameters network.Route, etag string) *retry.Error {
+	mc := metrics.NewMetricContext("routes", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "RouteCreateOrUpdate")
-		return
+		return createRateLimitErr(true, "RouteCreateOrUpdate")
 	}
 
 	klog.V(10).Infof("azRoutesClient.CreateOrUpdate(%q,%q,%q): start", resourceGroupName, routeTableName, routeName)
@@ -1181,17 +1001,16 @@ func (az *azRoutesClient) CreateOrUpdate(ctx context.Context, resourceGroupName 
 
 	req, err := az.createOrUpdatePreparer(ctx, resourceGroupName, routeTableName, routeName, routeParameters, etag)
 	if err != nil {
-		mc.Observe(err)
-		return nil, err
+		return retry.NewError(false, mc.Observe(err))
 	}
 
 	future, err := az.client.CreateOrUpdateSender(req)
 	if err != nil {
-		return future.Response(), mc.Observe(err)
+		return retry.GetError(future.Response(), mc.Observe(err))
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
+	return retry.GetError(future.Response(), mc.Observe(err))
 }
 
 // createOrUpdatePreparer prepares the CreateOrUpdate request.
@@ -1223,13 +1042,12 @@ func (az *azRoutesClient) createOrUpdatePreparer(ctx context.Context, resourceGr
 	return preparer.Prepare((&http.Request{}).WithContext(ctx))
 }
 
-func (az *azRoutesClient) Delete(ctx context.Context, resourceGroupName string, routeTableName string, routeName string) (resp *http.Response, err error) {
-	mc := newMetricContext("routes", "delete", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azRoutesClient) Delete(ctx context.Context, resourceGroupName string, routeTableName string, routeName string) *retry.Error {
+	mc := metrics.NewMetricContext("routes", "delete", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "RouteDelete")
-		return
+		return createRateLimitErr(true, "RouteDelete")
 	}
 
 	klog.V(10).Infof("azRoutesClient.Delete(%q,%q,%q): start", resourceGroupName, routeTableName, routeName)
@@ -1239,11 +1057,11 @@ func (az *azRoutesClient) Delete(ctx context.Context, resourceGroupName string, 
 
 	future, err := az.client.Delete(ctx, resourceGroupName, routeTableName, routeName)
 	if err != nil {
-		return future.Response(), mc.Observe(err)
+		return retry.GetStatusNotFoundAndForbiddenIgnoredError(future.Response(), mc.Observe(err))
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
+	return retry.GetStatusNotFoundAndForbiddenIgnoredError(future.Response(), mc.Observe(err))
 }
 
 // azRouteTablesClient implements RouteTablesClient.
@@ -1253,10 +1071,10 @@ type azRouteTablesClient struct {
 	rateLimiterWriter flowcontrol.RateLimiter
 }
 
-func newAzRouteTablesClient(config *azClientConfig) *azRouteTablesClient {
-	routeTablesClient := network.NewRouteTablesClient(config.subscriptionID)
-	routeTablesClient.BaseURI = config.resourceManagerEndpoint
-	routeTablesClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
+func newAzRouteTablesClient(config *azclients.ClientConfig) *azRouteTablesClient {
+	routeTablesClient := network.NewRouteTablesClient(config.SubscriptionID)
+	routeTablesClient.BaseURI = config.ResourceManagerEndpoint
+	routeTablesClient.Authorizer = autorest.NewBearerAuthorizer(config.ServicePrincipalToken)
 	routeTablesClient.PollingDelay = 5 * time.Second
 	if config.ShouldOmitCloudProviderBackoff {
 		routeTablesClient.RetryAttempts = config.CloudProviderBackoffRetries
@@ -1264,20 +1082,26 @@ func newAzRouteTablesClient(config *azClientConfig) *azRouteTablesClient {
 	}
 	configureUserAgent(&routeTablesClient.Client)
 
+	klog.V(2).Infof("Azure RouteTablesClient (read ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPS,
+		config.RateLimitConfig.CloudProviderRateLimitBucket)
+	klog.V(2).Infof("Azure RouteTablesClient (write ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPSWrite,
+		config.RateLimitConfig.CloudProviderRateLimitBucketWrite)
+	rateLimiterReader, rateLimiterWriter := azclients.NewRateLimiter(config.RateLimitConfig)
 	return &azRouteTablesClient{
 		client:            routeTablesClient,
-		rateLimiterReader: config.rateLimiterReader,
-		rateLimiterWriter: config.rateLimiterWriter,
+		rateLimiterReader: rateLimiterReader,
+		rateLimiterWriter: rateLimiterWriter,
 	}
 }
 
-func (az *azRouteTablesClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, routeTableName string, parameters network.RouteTable, etag string) (resp *http.Response, err error) {
-	mc := newMetricContext("route_tables", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azRouteTablesClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, routeTableName string, parameters network.RouteTable, etag string) *retry.Error {
+	mc := metrics.NewMetricContext("route_tables", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "RouteTableCreateOrUpdate")
-		return
+		return createRateLimitErr(true, "RouteTableCreateOrUpdate")
 	}
 
 	klog.V(10).Infof("azRouteTablesClient.CreateOrUpdate(%q,%q): start", resourceGroupName, routeTableName)
@@ -1287,16 +1111,16 @@ func (az *azRouteTablesClient) CreateOrUpdate(ctx context.Context, resourceGroup
 
 	req, err := az.createOrUpdatePreparer(ctx, resourceGroupName, routeTableName, parameters, etag)
 	if err != nil {
-		return nil, mc.Observe(err)
+		return retry.NewError(false, mc.Observe(err))
 	}
 
 	future, err := az.client.CreateOrUpdateSender(req)
 	if err != nil {
-		return future.Response(), mc.Observe(err)
+		return retry.GetError(future.Response(), mc.Observe(err))
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
+	return retry.GetError(future.Response(), mc.Observe(err))
 }
 
 // createOrUpdatePreparer prepares the CreateOrUpdate request.
@@ -1326,11 +1150,11 @@ func (az *azRouteTablesClient) createOrUpdatePreparer(ctx context.Context, resou
 	return preparer.Prepare((&http.Request{}).WithContext(ctx))
 }
 
-func (az *azRouteTablesClient) Get(ctx context.Context, resourceGroupName string, routeTableName string, expand string) (result network.RouteTable, err error) {
-	mc := newMetricContext("route_tables", "get", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azRouteTablesClient) Get(ctx context.Context, resourceGroupName string, routeTableName string, expand string) (result network.RouteTable, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("route_tables", "get", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "GetRouteTable")
+		rerr = createRateLimitErr(false, "GetRouteTable")
 		return
 	}
 
@@ -1339,9 +1163,10 @@ func (az *azRouteTablesClient) Get(ctx context.Context, resourceGroupName string
 		klog.V(10).Infof("azRouteTablesClient.Get(%q,%q): end", resourceGroupName, routeTableName)
 	}()
 
+	var err error
 	result, err = az.client.Get(ctx, resourceGroupName, routeTableName, expand)
 	mc.Observe(err)
-	return
+	return result, retry.GetError(result.Response.Response, err)
 }
 
 // azStorageAccountClient implements StorageAccountClient.
@@ -1351,9 +1176,9 @@ type azStorageAccountClient struct {
 	rateLimiterWriter flowcontrol.RateLimiter
 }
 
-func newAzStorageAccountClient(config *azClientConfig) *azStorageAccountClient {
-	storageAccountClient := storage.NewAccountsClientWithBaseURI(config.resourceManagerEndpoint, config.subscriptionID)
-	storageAccountClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
+func newAzStorageAccountClient(config *azclients.ClientConfig) *azStorageAccountClient {
+	storageAccountClient := storage.NewAccountsClientWithBaseURI(config.ResourceManagerEndpoint, config.SubscriptionID)
+	storageAccountClient.Authorizer = autorest.NewBearerAuthorizer(config.ServicePrincipalToken)
 	storageAccountClient.PollingDelay = 5 * time.Second
 	if config.ShouldOmitCloudProviderBackoff {
 		storageAccountClient.RetryAttempts = config.CloudProviderBackoffRetries
@@ -1361,20 +1186,26 @@ func newAzStorageAccountClient(config *azClientConfig) *azStorageAccountClient {
 	}
 	configureUserAgent(&storageAccountClient.Client)
 
+	klog.V(2).Infof("Azure StorageAccountClient (read ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPS,
+		config.RateLimitConfig.CloudProviderRateLimitBucket)
+	klog.V(2).Infof("Azure StorageAccountClient (write ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPSWrite,
+		config.RateLimitConfig.CloudProviderRateLimitBucketWrite)
+	rateLimiterReader, rateLimiterWriter := azclients.NewRateLimiter(config.RateLimitConfig)
 	return &azStorageAccountClient{
 		client:            storageAccountClient,
-		rateLimiterReader: config.rateLimiterReader,
-		rateLimiterWriter: config.rateLimiterWriter,
+		rateLimiterReader: rateLimiterReader,
+		rateLimiterWriter: rateLimiterWriter,
 	}
 }
 
-func (az *azStorageAccountClient) Create(ctx context.Context, resourceGroupName string, accountName string, parameters storage.AccountCreateParameters) (result *http.Response, err error) {
-	mc := newMetricContext("storage_account", "create", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azStorageAccountClient) Create(ctx context.Context, resourceGroupName string, accountName string, parameters storage.AccountCreateParameters) *retry.Error {
+	mc := metrics.NewMetricContext("storage_account", "create", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "StorageAccountCreate")
-		return
+		return createRateLimitErr(true, "StorageAccountCreate")
 	}
 
 	klog.V(10).Infof("azStorageAccountClient.Create(%q,%q): start", resourceGroupName, accountName)
@@ -1384,20 +1215,19 @@ func (az *azStorageAccountClient) Create(ctx context.Context, resourceGroupName 
 
 	future, err := az.client.Create(ctx, resourceGroupName, accountName, parameters)
 	if err != nil {
-		return future.Response(), err
+		return retry.GetError(future.Response(), err)
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
 	mc.Observe(err)
-	return future.Response(), err
+	return retry.GetError(future.Response(), err)
 }
 
-func (az *azStorageAccountClient) Delete(ctx context.Context, resourceGroupName string, accountName string) (result autorest.Response, err error) {
-	mc := newMetricContext("storage_account", "delete", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azStorageAccountClient) Delete(ctx context.Context, resourceGroupName string, accountName string) *retry.Error {
+	mc := metrics.NewMetricContext("storage_account", "delete", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "DeleteStorageAccount")
-		return
+		return createRateLimitErr(false, "DeleteStorageAccount")
 	}
 
 	klog.V(10).Infof("azStorageAccountClient.Delete(%q,%q): start", resourceGroupName, accountName)
@@ -1405,16 +1235,16 @@ func (az *azStorageAccountClient) Delete(ctx context.Context, resourceGroupName 
 		klog.V(10).Infof("azStorageAccountClient.Delete(%q,%q): end", resourceGroupName, accountName)
 	}()
 
-	result, err = az.client.Delete(ctx, resourceGroupName, accountName)
+	result, err := az.client.Delete(ctx, resourceGroupName, accountName)
 	mc.Observe(err)
-	return
+	return retry.GetStatusNotFoundAndForbiddenIgnoredError(result.Response, err)
 }
 
-func (az *azStorageAccountClient) ListKeys(ctx context.Context, resourceGroupName string, accountName string) (result storage.AccountListKeysResult, err error) {
-	mc := newMetricContext("storage_account", "list_keys", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azStorageAccountClient) ListKeys(ctx context.Context, resourceGroupName string, accountName string) (result storage.AccountListKeysResult, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("storage_account", "list_keys", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "ListStorageAccountKeys")
+		rerr = createRateLimitErr(false, "ListStorageAccountKeys")
 		return
 	}
 
@@ -1423,16 +1253,17 @@ func (az *azStorageAccountClient) ListKeys(ctx context.Context, resourceGroupNam
 		klog.V(10).Infof("azStorageAccountClient.ListKeys(%q,%q): end", resourceGroupName, accountName)
 	}()
 
-	result, err = az.client.ListKeys(ctx, resourceGroupName, accountName)
+	var err error
+	result, err = az.client.ListKeys(ctx, resourceGroupName, accountName, storage.Kerb)
 	mc.Observe(err)
-	return
+	return result, retry.GetError(result.Response.Response, err)
 }
 
-func (az *azStorageAccountClient) ListByResourceGroup(ctx context.Context, resourceGroupName string) (result storage.AccountListResult, err error) {
-	mc := newMetricContext("storage_account", "list_by_resource_group", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azStorageAccountClient) ListByResourceGroup(ctx context.Context, resourceGroupName string) (result storage.AccountListResult, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("storage_account", "list_by_resource_group", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "ListStorageAccountsByResourceGroup")
+		rerr = createRateLimitErr(false, "ListStorageAccountsByResourceGroup")
 		return
 	}
 
@@ -1441,16 +1272,17 @@ func (az *azStorageAccountClient) ListByResourceGroup(ctx context.Context, resou
 		klog.V(10).Infof("azStorageAccountClient.ListByResourceGroup(%q): end", resourceGroupName)
 	}()
 
+	var err error
 	result, err = az.client.ListByResourceGroup(ctx, resourceGroupName)
 	mc.Observe(err)
-	return
+	return result, retry.GetError(result.Response.Response, err)
 }
 
-func (az *azStorageAccountClient) GetProperties(ctx context.Context, resourceGroupName string, accountName string) (result storage.Account, err error) {
-	mc := newMetricContext("storage_account", "get_properties", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azStorageAccountClient) GetProperties(ctx context.Context, resourceGroupName string, accountName string) (result storage.Account, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("storage_account", "get_properties", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "GetStorageAccount/Properties")
+		rerr = createRateLimitErr(false, "GetStorageAccount/Properties")
 		return
 	}
 
@@ -1459,9 +1291,10 @@ func (az *azStorageAccountClient) GetProperties(ctx context.Context, resourceGro
 		klog.V(10).Infof("azStorageAccountClient.GetProperties(%q,%q): end", resourceGroupName, accountName)
 	}()
 
+	var err error
 	result, err = az.client.GetProperties(ctx, resourceGroupName, accountName, "")
 	mc.Observe(err)
-	return
+	return result, retry.GetError(result.Response.Response, err)
 }
 
 // azDisksClient implements DisksClient.
@@ -1471,9 +1304,9 @@ type azDisksClient struct {
 	rateLimiterWriter flowcontrol.RateLimiter
 }
 
-func newAzDisksClient(config *azClientConfig) *azDisksClient {
-	disksClient := compute.NewDisksClientWithBaseURI(config.resourceManagerEndpoint, config.subscriptionID)
-	disksClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
+func newAzDisksClient(config *azclients.ClientConfig) *azDisksClient {
+	disksClient := compute.NewDisksClientWithBaseURI(config.ResourceManagerEndpoint, config.SubscriptionID)
+	disksClient.Authorizer = autorest.NewBearerAuthorizer(config.ServicePrincipalToken)
 	disksClient.PollingDelay = 5 * time.Second
 	if config.ShouldOmitCloudProviderBackoff {
 		disksClient.RetryAttempts = config.CloudProviderBackoffRetries
@@ -1481,20 +1314,26 @@ func newAzDisksClient(config *azClientConfig) *azDisksClient {
 	}
 	configureUserAgent(&disksClient.Client)
 
+	klog.V(2).Infof("Azure DisksClient (read ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPS,
+		config.RateLimitConfig.CloudProviderRateLimitBucket)
+	klog.V(2).Infof("Azure DisksClient (write ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPSWrite,
+		config.RateLimitConfig.CloudProviderRateLimitBucketWrite)
+	rateLimiterReader, rateLimiterWriter := azclients.NewRateLimiter(config.RateLimitConfig)
 	return &azDisksClient{
 		client:            disksClient,
-		rateLimiterReader: config.rateLimiterReader,
-		rateLimiterWriter: config.rateLimiterWriter,
+		rateLimiterReader: rateLimiterReader,
+		rateLimiterWriter: rateLimiterWriter,
 	}
 }
 
-func (az *azDisksClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, diskName string, diskParameter compute.Disk) (resp *http.Response, err error) {
-	mc := newMetricContext("disks", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azDisksClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, diskName string, diskParameter compute.Disk) *retry.Error {
+	mc := metrics.NewMetricContext("disks", "create_or_update", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "DiskCreateOrUpdate")
-		return
+		return createRateLimitErr(true, "DiskCreateOrUpdate")
 	}
 
 	klog.V(10).Infof("azDisksClient.CreateOrUpdate(%q,%q): start", resourceGroupName, diskName)
@@ -1504,20 +1343,19 @@ func (az *azDisksClient) CreateOrUpdate(ctx context.Context, resourceGroupName s
 
 	future, err := az.client.CreateOrUpdate(ctx, resourceGroupName, diskName, diskParameter)
 	if err != nil {
-		return future.Response(), mc.Observe(err)
+		return retry.GetError(future.Response(), mc.Observe(err))
 	}
 
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
+	return retry.GetError(future.Response(), mc.Observe(err))
 }
 
-func (az *azDisksClient) Delete(ctx context.Context, resourceGroupName string, diskName string) (resp *http.Response, err error) {
-	mc := newMetricContext("disks", "delete", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azDisksClient) Delete(ctx context.Context, resourceGroupName string, diskName string) *retry.Error {
+	mc := metrics.NewMetricContext("disks", "delete", resourceGroupName, az.client.SubscriptionID, "")
 	/* Write rate limiting */
 	if !az.rateLimiterWriter.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(true, "DiskDelete")
-		return
+		return createRateLimitErr(true, "DiskDelete")
 	}
 
 	klog.V(10).Infof("azDisksClient.Delete(%q,%q): start", resourceGroupName, diskName)
@@ -1527,17 +1365,17 @@ func (az *azDisksClient) Delete(ctx context.Context, resourceGroupName string, d
 
 	future, err := az.client.Delete(ctx, resourceGroupName, diskName)
 	if err != nil {
-		return future.Response(), mc.Observe(err)
+		return retry.GetStatusNotFoundAndForbiddenIgnoredError(future.Response(), mc.Observe(err))
 	}
 	err = future.WaitForCompletionRef(ctx, az.client.Client)
-	return future.Response(), mc.Observe(err)
+	return retry.GetStatusNotFoundAndForbiddenIgnoredError(future.Response(), mc.Observe(err))
 }
 
-func (az *azDisksClient) Get(ctx context.Context, resourceGroupName string, diskName string) (result compute.Disk, err error) {
-	mc := newMetricContext("disks", "get", resourceGroupName, az.client.SubscriptionID, "")
+func (az *azDisksClient) Get(ctx context.Context, resourceGroupName string, diskName string) (result compute.Disk, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("disks", "get", resourceGroupName, az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "GetDisk")
+		rerr = createRateLimitErr(false, "GetDisk")
 		return
 	}
 
@@ -1546,14 +1384,16 @@ func (az *azDisksClient) Get(ctx context.Context, resourceGroupName string, disk
 		klog.V(10).Infof("azDisksClient.Get(%q,%q): end", resourceGroupName, diskName)
 	}()
 
+	var err error
 	result, err = az.client.Get(ctx, resourceGroupName, diskName)
 	mc.Observe(err)
-	return
+	return result, retry.GetError(result.Response.Response, err)
 }
 
-func newSnapshotsClient(config *azClientConfig) *compute.SnapshotsClient {
-	snapshotsClient := compute.NewSnapshotsClientWithBaseURI(config.resourceManagerEndpoint, config.subscriptionID)
-	snapshotsClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
+// TODO(feiskyer): refactor compute.SnapshotsClient to Interface.
+func newSnapshotsClient(config *azclients.ClientConfig) *compute.SnapshotsClient {
+	snapshotsClient := compute.NewSnapshotsClientWithBaseURI(config.ResourceManagerEndpoint, config.SubscriptionID)
+	snapshotsClient.Authorizer = autorest.NewBearerAuthorizer(config.ServicePrincipalToken)
 	snapshotsClient.PollingDelay = 5 * time.Second
 	if config.ShouldOmitCloudProviderBackoff {
 		snapshotsClient.RetryAttempts = config.CloudProviderBackoffRetries
@@ -1570,10 +1410,10 @@ type azVirtualMachineSizesClient struct {
 	rateLimiterWriter flowcontrol.RateLimiter
 }
 
-func newAzVirtualMachineSizesClient(config *azClientConfig) *azVirtualMachineSizesClient {
-	VirtualMachineSizesClient := compute.NewVirtualMachineSizesClient(config.subscriptionID)
-	VirtualMachineSizesClient.BaseURI = config.resourceManagerEndpoint
-	VirtualMachineSizesClient.Authorizer = autorest.NewBearerAuthorizer(config.servicePrincipalToken)
+func newAzVirtualMachineSizesClient(config *azclients.ClientConfig) *azVirtualMachineSizesClient {
+	VirtualMachineSizesClient := compute.NewVirtualMachineSizesClient(config.SubscriptionID)
+	VirtualMachineSizesClient.BaseURI = config.ResourceManagerEndpoint
+	VirtualMachineSizesClient.Authorizer = autorest.NewBearerAuthorizer(config.ServicePrincipalToken)
 	VirtualMachineSizesClient.PollingDelay = 5 * time.Second
 	if config.ShouldOmitCloudProviderBackoff {
 		VirtualMachineSizesClient.RetryAttempts = config.CloudProviderBackoffRetries
@@ -1581,18 +1421,25 @@ func newAzVirtualMachineSizesClient(config *azClientConfig) *azVirtualMachineSiz
 	}
 	configureUserAgent(&VirtualMachineSizesClient.Client)
 
+	klog.V(2).Infof("Azure VirtualMachineSizesClient (read ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPS,
+		config.RateLimitConfig.CloudProviderRateLimitBucket)
+	klog.V(2).Infof("Azure VirtualMachineSizesClient (write ops) using rate limit config: QPS=%g, bucket=%d",
+		config.RateLimitConfig.CloudProviderRateLimitQPSWrite,
+		config.RateLimitConfig.CloudProviderRateLimitBucketWrite)
+	rateLimiterReader, rateLimiterWriter := azclients.NewRateLimiter(config.RateLimitConfig)
 	return &azVirtualMachineSizesClient{
-		rateLimiterReader: config.rateLimiterReader,
-		rateLimiterWriter: config.rateLimiterWriter,
+		rateLimiterReader: rateLimiterReader,
+		rateLimiterWriter: rateLimiterWriter,
 		client:            VirtualMachineSizesClient,
 	}
 }
 
-func (az *azVirtualMachineSizesClient) List(ctx context.Context, location string) (result compute.VirtualMachineSizeListResult, err error) {
-	mc := newMetricContext("vmsizes", "list", "", az.client.SubscriptionID, "")
+func (az *azVirtualMachineSizesClient) List(ctx context.Context, location string) (result compute.VirtualMachineSizeListResult, rerr *retry.Error) {
+	mc := metrics.NewMetricContext("vmsizes", "list", "", az.client.SubscriptionID, "")
 	if !az.rateLimiterReader.TryAccept() {
 		mc.RateLimitedCount()
-		err = createRateLimitErr(false, "VMSizesList")
+		rerr = createRateLimitErr(false, "VMSizesList")
 		return
 	}
 
@@ -1601,7 +1448,8 @@ func (az *azVirtualMachineSizesClient) List(ctx context.Context, location string
 		klog.V(10).Infof("azVirtualMachineSizesClient.List(%q): end", location)
 	}()
 
+	var err error
 	result, err = az.client.List(ctx, location)
 	mc.Observe(err)
-	return
+	return result, retry.GetError(result.Response.Response, err)
 }

@@ -284,7 +284,7 @@ func (f *fakeAuth) AuthenticateRequest(req *http.Request) (*authenticator.Respon
 func (f *fakeAuth) GetRequestAttributes(u user.Info, req *http.Request) authorizer.Attributes {
 	return f.attributesFunc(u, req)
 }
-func (f *fakeAuth) Authorize(a authorizer.Attributes) (authorized authorizer.Decision, reason string, err error) {
+func (f *fakeAuth) Authorize(ctx context.Context, a authorizer.Attributes) (authorized authorizer.Decision, reason string, err error) {
 	return f.authorizeFunc(a)
 }
 
@@ -1011,6 +1011,16 @@ func TestContainerLogsWithInvalidTail(t *testing.T) {
 	}
 }
 
+func makeReq(t *testing.T, method, url, clientProtocol string) *http.Request {
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		t.Fatalf("error creating request: %v", err)
+	}
+	req.Header.Set("Content-Type", "")
+	req.Header.Add("X-Stream-Protocol-Version", clientProtocol)
+	return req
+}
+
 func TestServeExecInContainerIdleTimeout(t *testing.T) {
 	ss, err := newTestStreamingServer(100 * time.Millisecond)
 	require.NoError(t, err)
@@ -1027,7 +1037,7 @@ func TestServeExecInContainerIdleTimeout(t *testing.T) {
 	upgradeRoundTripper := spdy.NewSpdyRoundTripper(nil, true, true)
 	c := &http.Client{Transport: upgradeRoundTripper}
 
-	resp, err := c.Post(url, "", nil)
+	resp, err := c.Do(makeReq(t, "POST", url, "v4.channel.k8s.io"))
 	if err != nil {
 		t.Fatalf("Got error POSTing: %v", err)
 	}
@@ -1063,14 +1073,13 @@ func testExecAttach(t *testing.T, verb string) {
 		"stdout":                       {stdout: true, responseStatusCode: http.StatusSwitchingProtocols},
 		"stderr":                       {stderr: true, responseStatusCode: http.StatusSwitchingProtocols},
 		"stdout and stderr":            {stdout: true, stderr: true, responseStatusCode: http.StatusSwitchingProtocols},
-		"stdout stderr and tty":        {stdout: true, stderr: true, tty: true, responseStatusCode: http.StatusSwitchingProtocols},
 		"stdin stdout and stderr":      {stdin: true, stdout: true, stderr: true, responseStatusCode: http.StatusSwitchingProtocols},
 		"stdin stdout stderr with uid": {stdin: true, stdout: true, stderr: true, responseStatusCode: http.StatusSwitchingProtocols, uid: true},
 		"stdout with redirect":         {stdout: true, responseStatusCode: http.StatusFound, redirect: true},
 	}
 
-	for desc, test := range tests {
-		test := test
+	for desc := range tests {
+		test := tests[desc]
 		t.Run(desc, func(t *testing.T) {
 			ss, err := newTestStreamingServer(0)
 			require.NoError(t, err)
@@ -1194,7 +1203,7 @@ func testExecAttach(t *testing.T, verb string) {
 				c = &http.Client{Transport: upgradeRoundTripper}
 			}
 
-			resp, err = c.Post(url, "", nil)
+			resp, err = c.Do(makeReq(t, "POST", url, "v4.channel.k8s.io"))
 			require.NoError(t, err, "POSTing")
 			defer resp.Body.Close()
 
@@ -1290,7 +1299,8 @@ func TestServePortForwardIdleTimeout(t *testing.T) {
 	upgradeRoundTripper := spdy.NewRoundTripper(nil, true, true)
 	c := &http.Client{Transport: upgradeRoundTripper}
 
-	resp, err := c.Post(url, "", nil)
+	req := makeReq(t, "POST", url, "portforward.k8s.io")
+	resp, err := c.Do(req)
 	if err != nil {
 		t.Fatalf("Got error POSTing: %v", err)
 	}
@@ -1333,8 +1343,8 @@ func TestServePortForward(t *testing.T) {
 	podNamespace := "other"
 	podName := "foo"
 
-	for desc, test := range tests {
-		test := test
+	for desc := range tests {
+		test := tests[desc]
 		t.Run(desc, func(t *testing.T) {
 			ss, err := newTestStreamingServer(0)
 			require.NoError(t, err)
@@ -1398,7 +1408,8 @@ func TestServePortForward(t *testing.T) {
 				c = &http.Client{Transport: upgradeRoundTripper}
 			}
 
-			resp, err := c.Post(url, "", nil)
+			req := makeReq(t, "POST", url, "portforward.k8s.io")
+			resp, err := c.Do(req)
 			require.NoError(t, err, "POSTing")
 			defer resp.Body.Close()
 

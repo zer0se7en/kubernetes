@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package e2e_node
+package e2enode
 
 import (
 	"fmt"
@@ -23,9 +23,9 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -302,7 +302,7 @@ var _ = framework.KubeDescribe("PriorityMemoryEvictionOrdering [Slow] [Serial] [
 		})
 		ginkgo.BeforeEach(func() {
 			_, err := f.ClientSet.SchedulingV1().PriorityClasses().Create(&schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: highPriorityClassName}, Value: highPriority})
-			gomega.Expect(err == nil || errors.IsAlreadyExists(err)).To(gomega.BeTrue())
+			framework.ExpectEqual(err == nil || apierrors.IsAlreadyExists(err), true)
 		})
 		ginkgo.AfterEach(func() {
 			err := f.ClientSet.SchedulingV1().PriorityClasses().Delete(highPriorityClassName, &metav1.DeleteOptions{})
@@ -359,7 +359,7 @@ var _ = framework.KubeDescribe("PriorityLocalStorageEvictionOrdering [Slow] [Ser
 		})
 		ginkgo.BeforeEach(func() {
 			_, err := f.ClientSet.SchedulingV1().PriorityClasses().Create(&schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: highPriorityClassName}, Value: highPriority})
-			gomega.Expect(err == nil || errors.IsAlreadyExists(err)).To(gomega.BeTrue())
+			framework.ExpectEqual(err == nil || apierrors.IsAlreadyExists(err), true)
 		})
 		ginkgo.AfterEach(func() {
 			err := f.ClientSet.SchedulingV1().PriorityClasses().Delete(highPriorityClassName, &metav1.DeleteOptions{})
@@ -412,7 +412,7 @@ var _ = framework.KubeDescribe("PriorityPidEvictionOrdering [Slow] [Serial] [Dis
 		})
 		ginkgo.BeforeEach(func() {
 			_, err := f.ClientSet.SchedulingV1().PriorityClasses().Create(&schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: highPriorityClassName}, Value: highPriority})
-			gomega.Expect(err == nil || errors.IsAlreadyExists(err)).To(gomega.BeTrue())
+			framework.ExpectEqual(err == nil || apierrors.IsAlreadyExists(err), true)
 		})
 		ginkgo.AfterEach(func() {
 			err := f.ClientSet.SchedulingV1().PriorityClasses().Delete(highPriorityClassName, &metav1.DeleteOptions{})
@@ -520,19 +520,36 @@ func runEvictionTest(f *framework.Framework, pressureTimeout time.Duration, expe
 		})
 
 		ginkgo.AfterEach(func() {
-			defer func() {
+			prePullImagesIfNeccecary := func() {
 				if expectedNodeCondition == v1.NodeDiskPressure && framework.TestContext.PrepullImages {
 					// The disk eviction test may cause the prepulled images to be evicted,
 					// prepull those images again to ensure this test not affect following tests.
 					PrePullAllImages()
 				}
-			}()
+			}
+			// Run prePull using a defer to make sure it is executed even when the assertions below fails
+			defer prePullImagesIfNeccecary()
+
 			ginkgo.By("deleting pods")
 			for _, spec := range testSpecs {
 				ginkgo.By(fmt.Sprintf("deleting pod: %s", spec.pod.Name))
 				f.PodClient().DeleteSync(spec.pod.Name, &metav1.DeleteOptions{}, 10*time.Minute)
 			}
+
+			// In case a test fails before verifying that NodeCondition no longer exist on the node,
+			// we should wait for the NodeCondition to disappear
+			ginkgo.By(fmt.Sprintf("making sure NodeCondition %s no longer exist on the node", expectedNodeCondition))
+			gomega.Eventually(func() error {
+				if expectedNodeCondition != noPressure && hasNodeCondition(f, expectedNodeCondition) {
+					return fmt.Errorf("Conditions havent returned to normal, node still has %s", expectedNodeCondition)
+				}
+				return nil
+			}, pressureDissapearTimeout, evictionPollInterval).Should(gomega.BeNil())
+
 			reduceAllocatableMemoryUsage()
+			ginkgo.By("making sure we have all the required images for testing")
+			prePullImagesIfNeccecary()
+
 			ginkgo.By("making sure we can start a new pod after the test")
 			podName := "test-admit-pod"
 			f.PodClient().CreateSync(&v1.Pod{
@@ -644,7 +661,7 @@ func verifyEvictionEvents(f *framework.Framework, testSpecs []podEvictSpec, expe
 			if expectedStarvedResource != noStarvedResource {
 				// Check the eviction.StarvedResourceKey
 				starved, found := event.Annotations[eviction.StarvedResourceKey]
-				gomega.Expect(found).To(gomega.BeTrue(), "Expected to find an annotation on the eviction event for pod %s containing the starved resource %s, but it was not found",
+				framework.ExpectEqual(found, true, "Expected to find an annotation on the eviction event for pod %s containing the starved resource %s, but it was not found",
 					pod.Name, expectedStarvedResource)
 				starvedResource := v1.ResourceName(starved)
 				framework.ExpectEqual(starvedResource, expectedStarvedResource, "Expected to the starved_resource annotation on pod %s to contain %s, but got %s instead",
@@ -654,7 +671,7 @@ func verifyEvictionEvents(f *framework.Framework, testSpecs []podEvictSpec, expe
 				if expectedStarvedResource == v1.ResourceMemory {
 					// Check the eviction.OffendingContainersKey
 					offendersString, found := event.Annotations[eviction.OffendingContainersKey]
-					gomega.Expect(found).To(gomega.BeTrue(), "Expected to find an annotation on the eviction event for pod %s containing the offending containers, but it was not found",
+					framework.ExpectEqual(found, true, "Expected to find an annotation on the eviction event for pod %s containing the offending containers, but it was not found",
 						pod.Name)
 					offendingContainers := strings.Split(offendersString, ",")
 					framework.ExpectEqual(len(offendingContainers), 1, "Expected to find the offending container's usage in the %s annotation, but no container was found",

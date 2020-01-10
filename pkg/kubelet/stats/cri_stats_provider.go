@@ -661,7 +661,8 @@ func (p *criStatsProvider) getAndUpdateContainerUsageNanoCores(stats *runtimeapi
 		if nanoSeconds <= 0 {
 			return nil, fmt.Errorf("zero or negative interval (%v - %v)", newStats.Timestamp, cachedStats.Timestamp)
 		}
-		usageNanoCores := (newStats.UsageCoreNanoSeconds.Value - cachedStats.UsageCoreNanoSeconds.Value) * uint64(time.Second/time.Nanosecond) / uint64(nanoSeconds)
+		usageNanoCores := uint64(float64(newStats.UsageCoreNanoSeconds.Value-cachedStats.UsageCoreNanoSeconds.Value) /
+			float64(nanoSeconds) * float64(time.Second/time.Nanosecond))
 
 		// Update cache with new value.
 		usageToUpdate := usageNanoCores
@@ -671,7 +672,7 @@ func (p *criStatsProvider) getAndUpdateContainerUsageNanoCores(stats *runtimeapi
 	}()
 
 	if err != nil {
-		// This should not happen. Log now to raise visiblity
+		// This should not happen. Log now to raise visibility
 		klog.Errorf("failed updating cpu usage nano core: %v", err)
 	}
 	return usage
@@ -733,9 +734,8 @@ func removeTerminatedPods(pods []*runtimeapi.PodSandbox) []*runtimeapi.PodSandbo
 	return result
 }
 
-// removeTerminatedContainers returns containers with terminated ones.
-// It only removes a terminated container when there is a running instance
-// of the container.
+// removeTerminatedContainers removes all terminated containers since they should
+// not be used for usage calculations.
 func removeTerminatedContainers(containers []*runtimeapi.Container) []*runtimeapi.Container {
 	containerMap := make(map[containerID][]*runtimeapi.Container)
 	// Sort order by create time
@@ -752,19 +752,10 @@ func removeTerminatedContainers(containers []*runtimeapi.Container) []*runtimeap
 
 	result := make([]*runtimeapi.Container, 0)
 	for _, refs := range containerMap {
-		if len(refs) == 1 {
-			result = append(result, refs[0])
-			continue
-		}
-		found := false
 		for i := 0; i < len(refs); i++ {
 			if refs[i].State == runtimeapi.ContainerState_CONTAINER_RUNNING {
-				found = true
 				result = append(result, refs[i])
 			}
-		}
-		if !found {
-			result = append(result, refs[len(refs)-1])
 		}
 	}
 	return result

@@ -20,9 +20,12 @@ import (
 	"fmt"
 	"time"
 
-	"k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	batchv1 "k8s.io/api/batch/v1"
+	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
+	clientset "k8s.io/client-go/kubernetes"
 	batchinternal "k8s.io/kubernetes/pkg/apis/batch"
 	"k8s.io/kubernetes/test/e2e/framework"
 	jobutil "k8s.io/kubernetes/test/e2e/framework/job"
@@ -38,7 +41,7 @@ var _ = SIGDescribe("Job", func() {
 	completions := int32(4)
 	backoffLimit := int32(6) // default value
 
-	// Simplest case: all pods succeed promptly
+	// Simplest case: N pods succeed
 	ginkgo.It("should run a job to completion when tasks succeed", func() {
 		ginkgo.By("Creating a job")
 		job := jobutil.NewTestJob("succeed", "all-succeed", v1.RestartPolicyNever, parallelism, completions, nil, backoffLimit)
@@ -52,10 +55,13 @@ var _ = SIGDescribe("Job", func() {
 		ginkgo.By("Ensuring pods for job exist")
 		pods, err := jobutil.GetJobPods(f.ClientSet, f.Namespace.Name, job.Name)
 		framework.ExpectNoError(err, "failed to get pod list for job in namespace: %s", f.Namespace.Name)
-		framework.ExpectEqual(len(pods.Items), int(completions), "failed to ensure sufficient pod for job: got %d, want %d", len(pods.Items), completions)
+		successes := int32(0)
 		for _, pod := range pods.Items {
-			framework.ExpectEqual(pod.Status.Phase, v1.PodSucceeded, "failed to ensure pod status: pod %s status %s", pod.Name, pod.Status.Phase)
+			if pod.Status.Phase == v1.PodSucceeded {
+				successes++
+			}
 		}
+		framework.ExpectEqual(successes, completions, "epected %d successful job pods, but got  %d", completions, successes)
 	})
 
 	/*
@@ -134,7 +140,7 @@ var _ = SIGDescribe("Job", func() {
 		job, err := jobutil.CreateJob(f.ClientSet, f.Namespace.Name, job)
 		framework.ExpectNoError(err, "failed to create job in namespace: %s", f.Namespace.Name)
 		ginkgo.By("Ensuring job past active deadline")
-		err = jobutil.WaitForJobFailure(f.ClientSet, f.Namespace.Name, job.Name, time.Duration(activeDeadlineSeconds+10)*time.Second, "DeadlineExceeded")
+		err = waitForJobFailure(f.ClientSet, f.Namespace.Name, job.Name, time.Duration(activeDeadlineSeconds+10)*time.Second, "DeadlineExceeded")
 		framework.ExpectNoError(err, "failed to ensure job past active deadline in namespace: %s", f.Namespace.Name)
 	})
 
@@ -159,7 +165,7 @@ var _ = SIGDescribe("Job", func() {
 		ginkgo.By("Ensuring job was deleted")
 		_, err = jobutil.GetJob(f.ClientSet, f.Namespace.Name, job.Name)
 		framework.ExpectError(err, "failed to ensure job %s was deleted in namespace: %s", job.Name, f.Namespace.Name)
-		gomega.Expect(errors.IsNotFound(err)).To(gomega.BeTrue())
+		framework.ExpectEqual(apierrors.IsNotFound(err), true)
 	})
 
 	/*
@@ -231,7 +237,7 @@ var _ = SIGDescribe("Job", func() {
 		framework.ExpectNoError(err, "failed to create job in namespace: %s", f.Namespace.Name)
 		ginkgo.By("Ensuring job exceed backofflimit")
 
-		err = jobutil.WaitForJobFailure(f.ClientSet, f.Namespace.Name, job.Name, jobutil.JobTimeout, "BackoffLimitExceeded")
+		err = waitForJobFailure(f.ClientSet, f.Namespace.Name, job.Name, jobutil.JobTimeout, "BackoffLimitExceeded")
 		framework.ExpectNoError(err, "failed to ensure job exceed backofflimit in namespace: %s", f.Namespace.Name)
 
 		ginkgo.By(fmt.Sprintf("Checking that %d pod created and status is failed", backoff+1))
@@ -249,3 +255,21 @@ var _ = SIGDescribe("Job", func() {
 		}
 	})
 })
+
+// waitForJobFailure uses c to wait for up to timeout for the Job named jobName in namespace ns to fail.
+func waitForJobFailure(c clientset.Interface, ns, jobName string, timeout time.Duration, reason string) error {
+	return wait.Poll(framework.Poll, timeout, func() (bool, error) {
+		curr, err := c.BatchV1().Jobs(ns).Get(jobName, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		for _, c := range curr.Status.Conditions {
+			if c.Type == batchv1.JobFailed && c.Status == v1.ConditionTrue {
+				if reason == "" || reason == c.Reason {
+					return true, nil
+				}
+			}
+		}
+		return false, nil
+	})
+}
