@@ -42,6 +42,7 @@ import (
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2epv "k8s.io/kubernetes/test/e2e/framework/pv"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	e2esset "k8s.io/kubernetes/test/e2e/framework/statefulset"
 	"k8s.io/kubernetes/test/e2e/storage/utils"
 	imageutils "k8s.io/kubernetes/test/utils/image"
@@ -254,7 +255,7 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 			ginkgo.Context("Set fsGroup for local volume", func() {
 				ginkgo.BeforeEach(func() {
 					if testVolType == BlockLocalVolumeType {
-						framework.Skipf("We don't set fsGroup on block device, skipped.")
+						e2eskipper.Skipf("We don't set fsGroup on block device, skipped.")
 					}
 				})
 
@@ -278,7 +279,7 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 				})
 
 				ginkgo.It("should set different fsGroup for second pod if first pod is deleted", func() {
-					framework.Skipf("Disabled temporarily, reopen after #73168 is fixed")
+					e2eskipper.Skipf("Disabled temporarily, reopen after #73168 is fixed")
 					fsGroup1, fsGroup2 := int64(1234), int64(4321)
 					ginkgo.By("Create first pod and check fsGroup is set")
 					pod1 := createPodWithFsGroupTest(config, testVol, fsGroup1, fsGroup1)
@@ -317,7 +318,7 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 
 		ginkgo.It("should fail due to wrong node", func() {
 			if len(config.nodes) < 2 {
-				framework.Skipf("Runs only when number of nodes >= 2")
+				e2eskipper.Skipf("Runs only when number of nodes >= 2")
 			}
 
 			testVols := setupLocalVolumesPVCsPVs(config, DirectoryLocalVolumeType, config.node0, 1, immediateMode)
@@ -342,7 +343,7 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 
 		ginkgo.BeforeEach(func() {
 			if len(config.nodes) < 2 {
-				framework.Skipf("Runs only when number of nodes >= 2")
+				e2eskipper.Skipf("Runs only when number of nodes >= 2")
 			}
 
 			volumeType = DirectoryLocalVolumeType
@@ -393,7 +394,7 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 
 		ginkgo.It("should use volumes spread across nodes when pod has anti-affinity", func() {
 			if len(config.nodes) < ssReplicas {
-				framework.Skipf("Runs only when number of nodes >= %v", ssReplicas)
+				e2eskipper.Skipf("Runs only when number of nodes >= %v", ssReplicas)
 			}
 			ginkgo.By("Creating a StatefulSet with pod anti-affinity on nodes")
 			ss := createStatefulSet(config, ssReplicas, volsPerNode, true, false)
@@ -408,7 +409,7 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 
 		ginkgo.It("should use volumes spread across nodes when pod management is parallel and pod has anti-affinity", func() {
 			if len(config.nodes) < ssReplicas {
-				framework.Skipf("Runs only when number of nodes >= %v", ssReplicas)
+				e2eskipper.Skipf("Runs only when number of nodes >= %v", ssReplicas)
 			}
 			ginkgo.By("Creating a StatefulSet with pod anti-affinity on nodes")
 			ss := createStatefulSet(config, ssReplicas, 1, true, true)
@@ -570,7 +571,8 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 			}()
 
 			ginkgo.By("Waiting for all pods to complete successfully")
-			err := wait.PollImmediate(time.Second, 5*time.Minute, func() (done bool, err error) {
+			const completeTimeout = 5 * time.Minute
+			waitErr := wait.PollImmediate(time.Second, completeTimeout, func() (done bool, err error) {
 				podsList, err := config.client.CoreV1().Pods(config.ns).List(metav1.ListOptions{})
 				if err != nil {
 					return false, err
@@ -589,15 +591,15 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 						delete(pods, pod.Name)
 						numFinished++
 						framework.Logf("%v/%v pods finished", numFinished, totalPods)
-					case v1.PodFailed:
 					case v1.PodUnknown:
 						return false, fmt.Errorf("pod %v is in %v phase", pod.Name, pod.Status.Phase)
+					case v1.PodFailed:
 					}
 				}
 
 				return numFinished == totalPods, nil
 			})
-			framework.ExpectNoError(err)
+			framework.ExpectNoError(waitErr, "some pods failed to complete within %v", completeTimeout)
 		})
 	})
 
@@ -648,7 +650,8 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 				pods[pod.Name] = pod
 			}
 			ginkgo.By("Wait for all pods are running")
-			err = wait.PollImmediate(time.Second, 5*time.Minute, func() (done bool, err error) {
+			const runningTimeout = 5 * time.Minute
+			waitErr := wait.PollImmediate(time.Second, runningTimeout, func() (done bool, err error) {
 				podsList, err := config.client.CoreV1().Pods(config.ns).List(metav1.ListOptions{})
 				if err != nil {
 					return false, err
@@ -662,7 +665,7 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 				}
 				return runningPods == count, nil
 			})
-			framework.ExpectNoError(err)
+			framework.ExpectNoError(waitErr, "Some pods are not running within %v", runningTimeout)
 		})
 	})
 })
@@ -918,17 +921,26 @@ func createLocalPVCsPVs(config *localTestConfig, volumes []*localTestVolume, mod
 			verifyLocalVolume(config, volume)
 		}
 	} else {
-		// Verify PVCs are not bound
+		// Verify PVCs are not bound by waiting for phase==bound with a timeout and asserting that we hit the timeout.
 		// There isn't really a great way to verify this without making the test be slow...
-		err = wait.PollImmediate(time.Second, 10*time.Second, func() (done bool, err error) {
+		const bindTimeout = 10 * time.Second
+		waitErr := wait.PollImmediate(time.Second, bindTimeout, func() (done bool, err error) {
 			for _, volume := range volumes {
 				pvc, err := config.client.CoreV1().PersistentVolumeClaims(volume.pvc.Namespace).Get(volume.pvc.Name, metav1.GetOptions{})
-				framework.ExpectNoError(err)
-				framework.ExpectEqual(pvc.Status.Phase, v1.ClaimPending)
+				if err != nil {
+					return false, fmt.Errorf("failed to get PVC %s/%s: %v", volume.pvc.Namespace, volume.pvc.Name, err)
+				}
+				if pvc.Status.Phase != v1.ClaimPending {
+					return true, nil
+				}
 			}
 			return false, nil
 		})
-		framework.ExpectError(err)
+		if waitErr == wait.ErrWaitTimeout {
+			framework.Logf("PVCs were not bound within %v (that's good)", bindTimeout)
+			waitErr = nil
+		}
+		framework.ExpectNoError(waitErr, "Error making sure PVCs are not bound")
 	}
 }
 
@@ -1188,6 +1200,6 @@ func SkipUnlessLocalSSDExists(config *localTestConfig, ssdInterface, filesystemT
 	num, err := strconv.Atoi(strings.TrimSpace(res.Stdout))
 	framework.ExpectNoError(err)
 	if num < 1 {
-		framework.Skipf("Requires at least 1 %s %s localSSD ", ssdInterface, filesystemType)
+		e2eskipper.Skipf("Requires at least 1 %s %s localSSD ", ssdInterface, filesystemType)
 	}
 }

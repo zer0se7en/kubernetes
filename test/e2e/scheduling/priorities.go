@@ -35,12 +35,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
 	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
-	priorityutil "k8s.io/kubernetes/pkg/scheduler/algorithm/priorities/util"
+	schedutil "k8s.io/kubernetes/pkg/scheduler/util"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2eevents "k8s.io/kubernetes/test/e2e/framework/events"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2erc "k8s.io/kubernetes/test/e2e/framework/rc"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	testutils "k8s.io/kubernetes/test/utils"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 )
@@ -158,7 +159,7 @@ var _ = SIGDescribe("SchedulerPriorities [Serial]", func() {
 
 	ginkgo.It("Pod should be scheduled to node that don't match the PodAntiAffinity terms", func() {
 
-		framework.SkipUnlessNodeCountIsAtLeast(2)
+		e2eskipper.SkipUnlessNodeCountIsAtLeast(2)
 
 		ginkgo.By("Trying to launch a pod with a label to get a node which can launch it.")
 		pod := runPausePod(f, pausePodConfig{
@@ -445,7 +446,7 @@ func getNonZeroRequests(pod *v1.Pod) Resource {
 	result := Resource{}
 	for i := range pod.Spec.Containers {
 		container := &pod.Spec.Containers[i]
-		cpu, memory := priorityutil.GetNonzeroRequests(&container.Resources.Requests)
+		cpu, memory := schedutil.GetNonzeroRequests(&container.Resources.Requests)
 		result.MilliCPU += cpu
 		result.Memory += memory
 	}

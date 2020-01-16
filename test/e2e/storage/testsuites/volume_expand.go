@@ -32,6 +32,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2epv "k8s.io/kubernetes/test/e2e/framework/pv"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	"k8s.io/kubernetes/test/e2e/framework/volume"
 	"k8s.io/kubernetes/test/e2e/storage/testpatterns"
 )
@@ -92,10 +93,10 @@ func (v *volumeExpandTestSuite) DefineTests(driver TestDriver, pattern testpatte
 	ginkgo.BeforeEach(func() {
 		// Check preconditions.
 		if !driver.GetDriverInfo().Capabilities[CapBlock] && pattern.VolMode == v1.PersistentVolumeBlock {
-			framework.Skipf("Driver %q does not support block volume mode - skipping", driver.GetDriverInfo().Name)
+			e2eskipper.Skipf("Driver %q does not support block volume mode - skipping", driver.GetDriverInfo().Name)
 		}
 		if !driver.GetDriverInfo().Capabilities[CapControllerExpansion] {
-			framework.Skipf("Driver %q does not support volume expansion - skipping", driver.GetDriverInfo().Name)
+			e2eskipper.Skipf("Driver %q does not support volume expansion - skipping", driver.GetDriverInfo().Name)
 		}
 	})
 
@@ -265,22 +266,32 @@ func ExpandPVCSize(origPVC *v1.PersistentVolumeClaim, size resource.Quantity, c 
 	pvcName := origPVC.Name
 	updatedPVC := origPVC.DeepCopy()
 
+	// Retry the update on error, until we hit a timeout.
+	// TODO: Determine whether "retry with timeout" is appropriate here. Maybe we should only retry on version conflict.
+	var lastUpdateError error
 	waitErr := wait.PollImmediate(resizePollInterval, 30*time.Second, func() (bool, error) {
 		var err error
 		updatedPVC, err = c.CoreV1().PersistentVolumeClaims(origPVC.Namespace).Get(pvcName, metav1.GetOptions{})
 		if err != nil {
-			return false, fmt.Errorf("error fetching pvc %q for resizing with %v", pvcName, err)
+			return false, fmt.Errorf("error fetching pvc %q for resizing: %v", pvcName, err)
 		}
 
 		updatedPVC.Spec.Resources.Requests[v1.ResourceStorage] = size
 		updatedPVC, err = c.CoreV1().PersistentVolumeClaims(origPVC.Namespace).Update(updatedPVC)
-		if err == nil {
-			return true, nil
+		if err != nil {
+			framework.Logf("Error updating pvc %s: %v", pvcName, err)
+			lastUpdateError = err
+			return false, nil
 		}
-		framework.Logf("Error updating pvc %s with %v", pvcName, err)
-		return false, nil
+		return true, nil
 	})
-	return updatedPVC, waitErr
+	if waitErr == wait.ErrWaitTimeout {
+		return nil, fmt.Errorf("timed out attempting to update PVC size. last update error: %v", lastUpdateError)
+	}
+	if waitErr != nil {
+		return nil, fmt.Errorf("failed to expand PVC size (check logs for error): %v", waitErr)
+	}
+	return updatedPVC, nil
 }
 
 // WaitForResizingCondition waits for the pvc condition to be PersistentVolumeClaimResizing
@@ -290,7 +301,7 @@ func WaitForResizingCondition(pvc *v1.PersistentVolumeClaim, c clientset.Interfa
 		updatedPVC, err := c.CoreV1().PersistentVolumeClaims(pvc.Namespace).Get(pvc.Name, metav1.GetOptions{})
 
 		if err != nil {
-			return false, fmt.Errorf("error fetching pvc %q for checking for resize status : %v", pvc.Name, err)
+			return false, fmt.Errorf("error fetching pvc %q for checking for resize status: %v", pvc.Name, err)
 		}
 
 		pvcConditions := updatedPVC.Status.Conditions
@@ -301,13 +312,16 @@ func WaitForResizingCondition(pvc *v1.PersistentVolumeClaim, c clientset.Interfa
 		}
 		return false, nil
 	})
-	return waitErr
+	if waitErr != nil {
+		return fmt.Errorf("error waiting for pvc %q to have resize status: %v", pvc.Name, waitErr)
+	}
+	return nil
 }
 
 // WaitForControllerVolumeResize waits for the controller resize to be finished
 func WaitForControllerVolumeResize(pvc *v1.PersistentVolumeClaim, c clientset.Interface, duration time.Duration) error {
 	pvName := pvc.Spec.VolumeName
-	return wait.PollImmediate(resizePollInterval, duration, func() (bool, error) {
+	waitErr := wait.PollImmediate(resizePollInterval, duration, func() (bool, error) {
 		pvcSize := pvc.Spec.Resources.Requests[v1.ResourceStorage]
 
 		pv, err := c.CoreV1().PersistentVolumes().Get(pvName, metav1.GetOptions{})
@@ -323,6 +337,10 @@ func WaitForControllerVolumeResize(pvc *v1.PersistentVolumeClaim, c clientset.In
 		}
 		return false, nil
 	})
+	if waitErr != nil {
+		return fmt.Errorf("error while waiting for controller resize to finish: %v", waitErr)
+	}
+	return nil
 }
 
 // WaitForPendingFSResizeCondition waits for pvc to have resize condition
@@ -347,7 +365,10 @@ func WaitForPendingFSResizeCondition(pvc *v1.PersistentVolumeClaim, c clientset.
 		}
 		return false, nil
 	})
-	return updatedPVC, waitErr
+	if waitErr != nil {
+		return nil, fmt.Errorf("error waiting for pvc %q to have filesystem resize status: %v", pvc.Name, waitErr)
+	}
+	return updatedPVC, nil
 }
 
 // WaitForFSResize waits for the filesystem in the pv to be resized
@@ -370,5 +391,8 @@ func WaitForFSResize(pvc *v1.PersistentVolumeClaim, c clientset.Interface) (*v1.
 		}
 		return false, nil
 	})
-	return updatedPVC, waitErr
+	if waitErr != nil {
+		return nil, fmt.Errorf("error waiting for pvc %q filesystem resize to finish: %v", pvc.Name, waitErr)
+	}
+	return updatedPVC, nil
 }

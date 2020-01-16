@@ -133,6 +133,7 @@ aliases:
     - childsb
 
   sig-scheduling-maintainers:
+    - alculquicondor
     - bsalamat
     - k82cn
     - wojtek-t
@@ -448,6 +449,7 @@ aliases:
     - sttts
     - soltysh
   feature-approvers:
+    - andrewsykim     # Cloud Provider
     - bgrant0607      # Architecture
     - brancz          # Instrumentation
     - bsalamat        # Scheduling

@@ -33,6 +33,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 )
 
@@ -149,7 +150,7 @@ var _ = SIGDescribe("DisruptionController", func() {
 		}
 		ginkgo.It(fmt.Sprintf("evictions: %s => %s", c.description, expectation), func() {
 			if c.skipForBigClusters {
-				framework.SkipUnlessNodeCountIsAtMost(bigClusterSize - 1)
+				e2eskipper.SkipUnlessNodeCountIsAtMost(bigClusterSize - 1)
 			}
 			createPodsOrDie(cs, ns, c.podCount)
 			if c.replicaSetSize > 0 {
@@ -222,6 +223,7 @@ var _ = SIGDescribe("DisruptionController", func() {
 
 		ginkgo.By("Trying to evict the same pod we tried earlier which should now be evictable")
 		waitForPodsOrDie(cs, ns, 3)
+		waitForPdbToObserveHealthyPods(cs, ns, 3)
 		err = cs.CoreV1().Pods(ns).Evict(e)
 		framework.ExpectNoError(err) // the eviction is now allowed
 	})
@@ -400,4 +402,19 @@ func waitForPdbToBeProcessed(cs kubernetes.Interface, ns string) {
 		return true, nil
 	})
 	framework.ExpectNoError(err, "Waiting for the pdb to be processed in namespace %s", ns)
+}
+
+func waitForPdbToObserveHealthyPods(cs kubernetes.Interface, ns string, healthyCount int32) {
+	ginkgo.By("Waiting for the pdb to observed all healthy pods")
+	err := wait.PollImmediate(framework.Poll, wait.ForeverTestTimeout, func() (bool, error) {
+		pdb, err := cs.PolicyV1beta1().PodDisruptionBudgets(ns).Get("foo", metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		if pdb.Status.CurrentHealthy != healthyCount {
+			return false, nil
+		}
+		return true, nil
+	})
+	framework.ExpectNoError(err, "Waiting for the pdb in namespace %s to observed %d healthy pods", ns, healthyCount)
 }
