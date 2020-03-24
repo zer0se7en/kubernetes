@@ -20,6 +20,7 @@ package storage
 
 import (
 	"context"
+
 	"github.com/onsi/ginkgo"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -49,8 +50,6 @@ var _ = utils.SIGDescribe("Volumes", func() {
 				Namespace: namespace.Name,
 				Prefix:    "configmap",
 			}
-
-			defer volume.TestCleanup(f, config)
 			configMap := &v1.ConfigMap{
 				TypeMeta: metav1.TypeMeta{
 					Kind:       "ConfigMap",
@@ -69,7 +68,7 @@ var _ = utils.SIGDescribe("Volumes", func() {
 				framework.Failf("unable to create test configmap: %v", err)
 			}
 			defer func() {
-				_ = cs.CoreV1().ConfigMaps(namespace.Name).Delete(context.TODO(), configMap.Name, nil)
+				_ = cs.CoreV1().ConfigMaps(namespace.Name).Delete(context.TODO(), configMap.Name, metav1.DeleteOptions{})
 			}()
 
 			// Test one ConfigMap mounted several times to test #28502

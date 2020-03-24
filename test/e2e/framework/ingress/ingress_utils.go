@@ -400,7 +400,6 @@ func createTLSSecret(kubeClient clientset.Interface, namespace, secretName strin
 	}
 	var s *v1.Secret
 	if s, err = kubeClient.CoreV1().Secrets(namespace).Get(context.TODO(), secretName, metav1.GetOptions{}); err == nil {
-		// TODO: Retry the update. We don't really expect anything to conflict though.
 		framework.Logf("Updating secret %v in ns %v with hosts %v", secret.Name, namespace, host)
 		s.Data = secret.Data
 		_, err = kubeClient.CoreV1().Secrets(namespace).Update(context.TODO(), s, metav1.UpdateOptions{})
@@ -654,7 +653,7 @@ func (j *TestJig) tryDeleteGivenIngress(ing *networkingv1beta1.Ingress) {
 // runDelete runs the required command to delete the given ingress.
 func (j *TestJig) runDelete(ing *networkingv1beta1.Ingress) error {
 	if j.Class != MulticlusterIngressClassValue {
-		return j.Client.NetworkingV1beta1().Ingresses(ing.Namespace).Delete(context.TODO(), ing.Name, nil)
+		return j.Client.NetworkingV1beta1().Ingresses(ing.Namespace).Delete(context.TODO(), ing.Name, metav1.DeleteOptions{})
 	}
 	// Use kubemci to delete a multicluster ingress.
 	filePath := framework.TestContext.OutputDir + "/mci.yaml"
@@ -1146,12 +1145,12 @@ func (j *TestJig) DeleteTestResource(cs clientset.Interface, deploy *appsv1.Depl
 		}
 	}
 	if svc != nil {
-		if err := cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, nil); err != nil {
+		if err := cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, metav1.DeleteOptions{}); err != nil {
 			errs = append(errs, fmt.Errorf("error while deleting service %s/%s: %v", svc.Namespace, svc.Name, err))
 		}
 	}
 	if deploy != nil {
-		if err := cs.AppsV1().Deployments(deploy.Namespace).Delete(context.TODO(), deploy.Name, nil); err != nil {
+		if err := cs.AppsV1().Deployments(deploy.Namespace).Delete(context.TODO(), deploy.Name, metav1.DeleteOptions{}); err != nil {
 			errs = append(errs, fmt.Errorf("error while deleting deployment %s/%s: %v", deploy.Namespace, deploy.Name, err))
 		}
 	}

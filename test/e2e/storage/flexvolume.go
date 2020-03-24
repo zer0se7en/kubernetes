@@ -65,8 +65,6 @@ func testFlexVolume(driver string, config volume.TestConfig, f *framework.Framew
 		},
 	}
 	volume.TestVolumeClient(f, config, nil, "" /* fsType */, tests)
-
-	volume.TestCleanup(f, config)
 }
 
 // installFlex installs the driver found at filePath on the node, and restarts
@@ -195,7 +193,7 @@ var _ = utils.SIGDescribe("Flexvolumes", func() {
 		testFlexVolume(driverInstallAs, config, f)
 
 		ginkgo.By("waiting for flex client pod to terminate")
-		if err := f.WaitForPodTerminated(config.Prefix+"-client", ""); !apierrors.IsNotFound(err) {
+		if err := e2epod.WaitForPodTerminatedInNamespace(f.ClientSet, config.Prefix+"-client", "", f.Namespace.Name); !apierrors.IsNotFound(err) {
 			framework.ExpectNoError(err, "Failed to wait client pod terminated: %v", err)
 		}
 
@@ -215,7 +213,7 @@ var _ = utils.SIGDescribe("Flexvolumes", func() {
 		testFlexVolume(driverInstallAs, config, f)
 
 		ginkgo.By("waiting for flex client pod to terminate")
-		if err := f.WaitForPodTerminated(config.Prefix+"-client", ""); !apierrors.IsNotFound(err) {
+		if err := e2epod.WaitForPodTerminatedInNamespace(f.ClientSet, config.Prefix+"-client", "", f.Namespace.Name); !apierrors.IsNotFound(err) {
 			framework.ExpectNoError(err, "Failed to wait client pod terminated: %v", err)
 		}
 

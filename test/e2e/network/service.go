@@ -114,20 +114,26 @@ type portsByPodName map[string][]int
 // return false only in case of unexpected errors.
 func checkAffinity(execPod *v1.Pod, serviceIP string, servicePort int, shouldHold bool) bool {
 	serviceIPPort := net.JoinHostPort(serviceIP, strconv.Itoa(servicePort))
-	cmd := fmt.Sprintf(`curl -q -s --connect-timeout 2 http://%s/`, serviceIPPort)
+	curl := fmt.Sprintf(`curl -q -s --connect-timeout 2 http://%s/`, serviceIPPort)
+	cmd := fmt.Sprintf("for i in $(seq 0 %d); do echo; %s ; done", AffinityConfirmCount, curl)
 	timeout := AffinityTimeout
 	if execPod == nil {
 		timeout = LoadBalancerPollTimeout
 	}
 	var tracker affinityTracker
-	if pollErr := wait.PollImmediate(framework.Poll, timeout, func() (bool, error) {
+	// interval considering a maximum of 2 seconds per connection
+	interval := 2 * AffinityConfirmCount * time.Second
+	if pollErr := wait.PollImmediate(interval, timeout, func() (bool, error) {
 		if execPod != nil {
 			stdout, err := framework.RunHostCmd(execPod.Namespace, execPod.Name, cmd)
 			if err != nil {
 				framework.Logf("Failed to get response from %s. Retry until timeout", serviceIPPort)
 				return false, nil
 			}
-			tracker.recordHost(stdout)
+			hosts := strings.Split(stdout, "\n")
+			for _, host := range hosts {
+				tracker.recordHost(strings.TrimSpace(host))
+			}
 		} else {
 			rawResponse := GetHTTPContent(serviceIP, servicePort, timeout, "")
 			tracker.recordHost(rawResponse.String())
@@ -249,7 +255,7 @@ func StopServeHostnameService(clientset clientset.Interface, ns, name string) er
 	if err := e2erc.DeleteRCAndWaitForGC(clientset, ns, name); err != nil {
 		return err
 	}
-	if err := clientset.CoreV1().Services(ns).Delete(context.TODO(), name, nil); err != nil {
+	if err := clientset.CoreV1().Services(ns).Delete(context.TODO(), name, metav1.DeleteOptions{}); err != nil {
 		return err
 	}
 	return nil
@@ -729,7 +735,7 @@ var _ = SIGDescribe("Services", func() {
 
 		ginkgo.By("creating service " + serviceName + " in namespace " + ns)
 		defer func() {
-			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
 			framework.ExpectNoError(err, "failed to delete service: %s in namespace: %s", serviceName, ns)
 		}()
 		_, err := jig.CreateTCPServiceWithPort(nil, 80)
@@ -741,7 +747,7 @@ var _ = SIGDescribe("Services", func() {
 		names := map[string]bool{}
 		defer func() {
 			for name := range names {
-				err := cs.CoreV1().Pods(ns).Delete(context.TODO(), name, nil)
+				err := cs.CoreV1().Pods(ns).Delete(context.TODO(), name, metav1.DeleteOptions{})
 				framework.ExpectNoError(err, "failed to delete pod: %s in namespace: %s", name, ns)
 			}
 		}()
@@ -782,7 +788,7 @@ var _ = SIGDescribe("Services", func() {
 		jig := e2eservice.NewTestJig(cs, ns, serviceName)
 
 		defer func() {
-			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
 			framework.ExpectNoError(err, "failed to delete service: %s in namespace: %s", serviceName, ns)
 		}()
 
@@ -814,7 +820,7 @@ var _ = SIGDescribe("Services", func() {
 		names := map[string]bool{}
 		defer func() {
 			for name := range names {
-				err := cs.CoreV1().Pods(ns).Delete(context.TODO(), name, nil)
+				err := cs.CoreV1().Pods(ns).Delete(context.TODO(), name, metav1.DeleteOptions{})
 				framework.ExpectNoError(err, "failed to delete pod: %s in namespace: %s", name, ns)
 			}
 		}()
@@ -880,7 +886,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		defer func() {
 			framework.Logf("Cleaning up the sourceip test service")
-			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
 			framework.ExpectNoError(err, "failed to delete service: %s in namespace: %s", serviceName, ns)
 		}()
 		serviceIP := tcpService.Spec.ClusterIP
@@ -900,10 +906,10 @@ var _ = SIGDescribe("Services", func() {
 		pod.Labels = jig.Labels
 		_, err = cs.CoreV1().Pods(ns).Create(context.TODO(), pod, metav1.CreateOptions{})
 		framework.ExpectNoError(err)
-		framework.ExpectNoError(f.WaitForPodReady(pod.Name))
+		framework.ExpectNoError(e2epod.WaitTimeoutForPodReadyInNamespace(f.ClientSet, pod.Name, f.Namespace.Name, framework.PodStartTimeout))
 		defer func() {
 			framework.Logf("Cleaning up the echo server pod")
-			err := cs.CoreV1().Pods(ns).Delete(context.TODO(), serverPodName, nil)
+			err := cs.CoreV1().Pods(ns).Delete(context.TODO(), serverPodName, metav1.DeleteOptions{})
 			framework.ExpectNoError(err, "failed to delete pod: %s on node", serverPodName)
 		}()
 
@@ -916,7 +922,7 @@ var _ = SIGDescribe("Services", func() {
 
 		defer func() {
 			framework.Logf("Deleting deployment")
-			err = cs.AppsV1().Deployments(ns).Delete(context.TODO(), deployment.Name, &metav1.DeleteOptions{})
+			err = cs.AppsV1().Deployments(ns).Delete(context.TODO(), deployment.Name, metav1.DeleteOptions{})
 			framework.ExpectNoError(err, "Failed to delete deployment %s", deployment.Name)
 		}()
 
@@ -958,7 +964,7 @@ var _ = SIGDescribe("Services", func() {
 		podTemplate.Labels = jig.Labels
 		pod, err := cs.CoreV1().Pods(ns).Create(context.TODO(), podTemplate, metav1.CreateOptions{})
 		framework.ExpectNoError(err)
-		framework.ExpectNoError(f.WaitForPodReady(pod.Name))
+		framework.ExpectNoError(e2epod.WaitTimeoutForPodReadyInNamespace(f.ClientSet, pod.Name, f.Namespace.Name, framework.PodStartTimeout))
 
 		ginkgo.By("waiting for the service to expose an endpoint")
 		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{serverPodName: {servicePort}})
@@ -1538,7 +1544,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		defer func() {
 			framework.Logf("Cleaning up the updating NodePorts test service")
-			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
 			framework.ExpectNoError(err, "failed to delete service: %s in namespace: %s", serviceName, ns)
 		}()
 		framework.Logf("Service Port TCP: %v", tcpService.Spec.Ports[0].Port)
@@ -1610,7 +1616,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		defer func() {
 			framework.Logf("Cleaning up the ExternalName to ClusterIP test service")
-			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
 			framework.ExpectNoError(err, "failed to delete service %s in namespace %s", serviceName, ns)
 		}()
 
@@ -1649,7 +1655,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		defer func() {
 			framework.Logf("Cleaning up the ExternalName to NodePort test service")
-			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
 			framework.ExpectNoError(err, "failed to delete service %s in namespace %s", serviceName, ns)
 		}()
 
@@ -1687,7 +1693,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		defer func() {
 			framework.Logf("Cleaning up the ClusterIP to ExternalName test service")
-			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
 			framework.ExpectNoError(err, "failed to delete service %s in namespace %s", serviceName, ns)
 		}()
 
@@ -1729,7 +1735,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		defer func() {
 			framework.Logf("Cleaning up the NodePort to ExternalName test service")
-			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
 			framework.ExpectNoError(err, "failed to delete service %s in namespace %s", serviceName, ns)
 		}()
 
@@ -2075,7 +2081,7 @@ var _ = SIGDescribe("Services", func() {
 		} else {
 			for _, pod := range pods.Items {
 				var gracePeriodSeconds int64 = 0
-				err := podClient.Delete(context.TODO(), pod.Name, &metav1.DeleteOptions{GracePeriodSeconds: &gracePeriodSeconds})
+				err := podClient.Delete(context.TODO(), pod.Name, metav1.DeleteOptions{GracePeriodSeconds: &gracePeriodSeconds})
 				if err != nil {
 					framework.Logf("warning: error force deleting pod '%s': %s", pod.Name, err)
 				}
@@ -2357,28 +2363,42 @@ var _ = SIGDescribe("Services", func() {
 	})
 
 	// [LinuxOnly]: Windows does not support session affinity.
-	ginkgo.It("should have session affinity work for service with type clusterIP [LinuxOnly] [Flaky]", func() {
+	ginkgo.It("should have session affinity work for service with type clusterIP [LinuxOnly]", func() {
 		svc := getServeHostnameService("affinity-clusterip")
 		svc.Spec.Type = v1.ServiceTypeClusterIP
 		execAffinityTestForNonLBService(f, cs, svc)
 	})
 
 	// [LinuxOnly]: Windows does not support session affinity.
-	ginkgo.It("should be able to switch session affinity for service with type clusterIP [LinuxOnly] [Flaky]", func() {
+	ginkgo.It("should have session affinity timeout work for service with type clusterIP [LinuxOnly]", func() {
+		svc := getServeHostnameService("affinity-clusterip-timeout")
+		svc.Spec.Type = v1.ServiceTypeClusterIP
+		execAffinityTestForSessionAffinityTimeout(f, cs, svc)
+	})
+
+	// [LinuxOnly]: Windows does not support session affinity.
+	ginkgo.It("should be able to switch session affinity for service with type clusterIP [LinuxOnly]", func() {
 		svc := getServeHostnameService("affinity-clusterip-transition")
 		svc.Spec.Type = v1.ServiceTypeClusterIP
 		execAffinityTestForNonLBServiceWithTransition(f, cs, svc)
 	})
 
 	// [LinuxOnly]: Windows does not support session affinity.
-	ginkgo.It("should have session affinity work for NodePort service [LinuxOnly] [Flaky]", func() {
+	ginkgo.It("should have session affinity work for NodePort service [LinuxOnly]", func() {
 		svc := getServeHostnameService("affinity-nodeport")
 		svc.Spec.Type = v1.ServiceTypeNodePort
 		execAffinityTestForNonLBService(f, cs, svc)
 	})
 
 	// [LinuxOnly]: Windows does not support session affinity.
-	ginkgo.It("should be able to switch session affinity for NodePort service [LinuxOnly] [Flaky]", func() {
+	ginkgo.It("should have session affinity timeout work for NodePort service [LinuxOnly]", func() {
+		svc := getServeHostnameService("affinity-nodeport-timeout")
+		svc.Spec.Type = v1.ServiceTypeNodePort
+		execAffinityTestForSessionAffinityTimeout(f, cs, svc)
+	})
+
+	// [LinuxOnly]: Windows does not support session affinity.
+	ginkgo.It("should be able to switch session affinity for NodePort service [LinuxOnly]", func() {
 		svc := getServeHostnameService("affinity-nodeport-transition")
 		svc.Spec.Type = v1.ServiceTypeNodePort
 		execAffinityTestForNonLBServiceWithTransition(f, cs, svc)
@@ -2713,7 +2733,7 @@ var _ = SIGDescribe("ESIPP [Slow] [DisabledForLargeClusters]", func() {
 				err := TestHTTPHealthCheckNodePort(ips[0], healthCheckNodePort, "/healthz", e2eservice.KubeProxyEndpointLagTimeout, false, threshold)
 				framework.ExpectNoError(err)
 			}
-			err = cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, nil)
+			err = cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, metav1.DeleteOptions{})
 			framework.ExpectNoError(err)
 		}()
 
@@ -2739,7 +2759,7 @@ var _ = SIGDescribe("ESIPP [Slow] [DisabledForLargeClusters]", func() {
 		svc, err := jig.CreateOnlyLocalNodePortService(true)
 		framework.ExpectNoError(err)
 		defer func() {
-			err := cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, nil)
+			err := cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, metav1.DeleteOptions{})
 			framework.ExpectNoError(err)
 		}()
 
@@ -2782,7 +2802,7 @@ var _ = SIGDescribe("ESIPP [Slow] [DisabledForLargeClusters]", func() {
 		defer func() {
 			err = jig.ChangeServiceType(v1.ServiceTypeClusterIP, loadBalancerCreateTimeout)
 			framework.ExpectNoError(err)
-			err := cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, nil)
+			err := cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, metav1.DeleteOptions{})
 			framework.ExpectNoError(err)
 		}()
 
@@ -2843,7 +2863,7 @@ var _ = SIGDescribe("ESIPP [Slow] [DisabledForLargeClusters]", func() {
 		defer func() {
 			err = jig.ChangeServiceType(v1.ServiceTypeClusterIP, loadBalancerCreateTimeout)
 			framework.ExpectNoError(err)
-			err := cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, nil)
+			err := cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, metav1.DeleteOptions{})
 			framework.ExpectNoError(err)
 		}()
 
@@ -2858,7 +2878,7 @@ var _ = SIGDescribe("ESIPP [Slow] [DisabledForLargeClusters]", func() {
 
 		defer func() {
 			framework.Logf("Deleting deployment")
-			err = cs.AppsV1().Deployments(namespace).Delete(context.TODO(), deployment.Name, &metav1.DeleteOptions{})
+			err = cs.AppsV1().Deployments(namespace).Delete(context.TODO(), deployment.Name, metav1.DeleteOptions{})
 			framework.ExpectNoError(err, "Failed to delete deployment %s", deployment.Name)
 		}()
 
@@ -2906,7 +2926,7 @@ var _ = SIGDescribe("ESIPP [Slow] [DisabledForLargeClusters]", func() {
 		defer func() {
 			err = jig.ChangeServiceType(v1.ServiceTypeClusterIP, loadBalancerCreateTimeout)
 			framework.ExpectNoError(err)
-			err := cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, nil)
+			err := cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, metav1.DeleteOptions{})
 			framework.ExpectNoError(err)
 		}()
 
@@ -3036,6 +3056,69 @@ func execSourceipTest(pausePod v1.Pod, serviceAddress string) (string, string) {
 	return pausePod.Status.PodIP, host
 }
 
+// execAffinityTestForSessionAffinityTimeout is a helper function that wrap the logic of
+// affinity test for non-load-balancer services. Session afinity will be
+// enabled when the service is created and a short timeout will be configured so
+// session affinity must change after the timeout expirese.
+func execAffinityTestForSessionAffinityTimeout(f *framework.Framework, cs clientset.Interface, svc *v1.Service) {
+	ns := f.Namespace.Name
+	numPods, servicePort, serviceName := 3, defaultServeHostnameServicePort, svc.ObjectMeta.Name
+	ginkgo.By("creating service in namespace " + ns)
+	serviceType := svc.Spec.Type
+	// set an affinity timeout equal to the number of connection requests
+	svcSessionAffinityTimeout := int32(AffinityConfirmCount)
+	svc.Spec.SessionAffinity = v1.ServiceAffinityClientIP
+	svc.Spec.SessionAffinityConfig = &v1.SessionAffinityConfig{
+		ClientIP: &v1.ClientIPConfig{TimeoutSeconds: &svcSessionAffinityTimeout},
+	}
+	_, _, err := StartServeHostnameService(cs, svc, ns, numPods)
+	framework.ExpectNoError(err, "failed to create replication controller with service in the namespace: %s", ns)
+	defer func() {
+		StopServeHostnameService(cs, ns, serviceName)
+	}()
+	jig := e2eservice.NewTestJig(cs, ns, serviceName)
+	svc, err = jig.Client.CoreV1().Services(ns).Get(context.TODO(), serviceName, metav1.GetOptions{})
+	framework.ExpectNoError(err, "failed to fetch service: %s in namespace: %s", serviceName, ns)
+	var svcIP string
+	if serviceType == v1.ServiceTypeNodePort {
+		nodes, err := e2enode.GetReadySchedulableNodes(cs)
+		framework.ExpectNoError(err)
+		addrs := e2enode.CollectAddresses(nodes, v1.NodeInternalIP)
+		gomega.Expect(len(addrs)).To(gomega.BeNumerically(">", 0), "ginkgo.Failed to get Node internal IP")
+		svcIP = addrs[0]
+		servicePort = int(svc.Spec.Ports[0].NodePort)
+	} else {
+		svcIP = svc.Spec.ClusterIP
+	}
+
+	execPod := e2epod.CreateExecPodOrFail(cs, ns, "execpod-affinity", nil)
+	defer func() {
+		framework.Logf("Cleaning up the exec pod")
+		err := cs.CoreV1().Pods(ns).Delete(context.TODO(), execPod.Name, metav1.DeleteOptions{})
+		framework.ExpectNoError(err, "failed to delete pod: %s in namespace: %s", execPod.Name, ns)
+	}()
+	err = jig.CheckServiceReachability(svc, execPod)
+	framework.ExpectNoError(err)
+
+	// the service should be sticky until the timeout expires
+	framework.ExpectEqual(checkAffinity(execPod, svcIP, servicePort, true), true)
+	// but it should return different hostnames after the timeout expires
+	// try several times to avoid the probability that we hit the same pod twice
+	hosts := sets.NewString()
+	cmd := fmt.Sprintf(`curl -q -s --connect-timeout 2 http://%s/`, net.JoinHostPort(svcIP, strconv.Itoa(servicePort)))
+	for i := 0; i < 10; i++ {
+		hostname, err := framework.RunHostCmd(execPod.Namespace, execPod.Name, cmd)
+		if err == nil {
+			hosts.Insert(hostname)
+			if hosts.Len() > 1 {
+				return
+			}
+			time.Sleep(time.Duration(svcSessionAffinityTimeout) * time.Second)
+		}
+	}
+	framework.Fail("Session is sticky after reaching the timeout")
+}
+
 func execAffinityTestForNonLBServiceWithTransition(f *framework.Framework, cs clientset.Interface, svc *v1.Service) {
 	execAffinityTestForNonLBServiceWithOptionalTransition(f, cs, svc, true)
 }
@@ -3078,7 +3161,7 @@ func execAffinityTestForNonLBServiceWithOptionalTransition(f *framework.Framewor
 	execPod := e2epod.CreateExecPodOrFail(cs, ns, "execpod-affinity", nil)
 	defer func() {
 		framework.Logf("Cleaning up the exec pod")
-		err := cs.CoreV1().Pods(ns).Delete(context.TODO(), execPod.Name, nil)
+		err := cs.CoreV1().Pods(ns).Delete(context.TODO(), execPod.Name, metav1.DeleteOptions{})
 		framework.ExpectNoError(err, "failed to delete pod: %s in namespace: %s", execPod.Name, ns)
 	}()
 	err = jig.CheckServiceReachability(svc, execPod)
@@ -3258,7 +3341,7 @@ func proxyMode(f *framework.Framework) (string, error) {
 		},
 	}
 	f.PodClient().CreateSync(pod)
-	defer f.PodClient().DeleteSync(pod.Name, &metav1.DeleteOptions{}, framework.DefaultPodDeletionTimeout)
+	defer f.PodClient().DeleteSync(pod.Name, metav1.DeleteOptions{}, framework.DefaultPodDeletionTimeout)
 
 	cmd := "curl -q -s --connect-timeout 1 http://localhost:10249/proxyMode"
 	stdout, err := framework.RunHostCmd(pod.Namespace, pod.Name, cmd)

@@ -83,7 +83,7 @@ fi
 # you are updating the os image versions, update this variable.
 # Also please update corresponding image for node e2e at:
 # https://github.com/kubernetes/kubernetes/blob/master/test/e2e_node/jenkins/image-config.yaml
-GCI_VERSION=${KUBE_GCI_VERSION:-cos-77-12371-114-0}
+GCI_VERSION=${KUBE_GCI_VERSION:-cos-77-12371-175-0}
 MASTER_IMAGE=${KUBE_GCE_MASTER_IMAGE:-}
 MASTER_IMAGE_PROJECT=${KUBE_GCE_MASTER_PROJECT:-cos-cloud}
 NODE_IMAGE=${KUBE_GCE_NODE_IMAGE:-${GCI_VERSION}}
@@ -496,3 +496,4 @@ GCE_PRIVATE_CLUSTER_PORTS_PER_VM="${KUBE_GCE_PRIVATE_CLUSTER_PORTS_PER_VM:-}"
 
 # Optional: Create apiserver konnectivity server and agent.
 ENABLE_EGRESS_VIA_KONNECTIVITY_SERVICE="${KUBE_ENABLE_EGRESS_VIA_KONNECTIVITY_SERVICE:-false}"
+KONNECTIVITY_SERVICE_PROXY_PROTOCOL_MODE="${KUBE_KONNECTIVITY_SERVICE_PROXY_PROTOCOL_MODE:-grpc}"
