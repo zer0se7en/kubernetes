@@ -148,7 +148,7 @@ func runKubeletStartJoinPhase(c workflow.RunData) (returnErr error) {
 		return errors.Wrapf(err, "cannot get Node %q", nodeName)
 	}
 	for _, cond := range node.Status.Conditions {
-		if cond.Type == v1.NodeReady {
+		if cond.Type == v1.NodeReady && cond.Status == v1.ConditionTrue {
 			return errors.Errorf("a Node with name %q and status %q already exists in the cluster. "+
 				"You must delete the existing Node or change the name of this new joining Node", nodeName, v1.NodeReady)
 		}
@@ -204,7 +204,7 @@ func waitForTLSBootstrappedClient() error {
 	fmt.Println("[kubelet-start] Waiting for the kubelet to perform the TLS Bootstrap...")
 
 	// Loop on every falsy return. Return with an error if raised. Exit successfully if true is returned.
-	return wait.PollImmediate(kubeadmconstants.APICallRetryInterval, kubeadmconstants.TLSBootstrapTimeout, func() (bool, error) {
+	return wait.PollImmediate(kubeadmconstants.TLSBootstrapRetryInterval, kubeadmconstants.TLSBootstrapTimeout, func() (bool, error) {
 		// Check that we can create a client set out of the kubelet kubeconfig. This ensures not
 		// only that the kubeconfig file exists, but that other files required by it also exist (like
 		// client certificate and key)

@@ -70,19 +70,6 @@ users:
 		t.Fatal(err)
 	}
 
-	v1alpha1Config := filepath.Join(tmpDir, "kubeconfig_v1alpha1.yaml")
-	if err := ioutil.WriteFile(v1alpha1Config, []byte(fmt.Sprintf(`
-apiVersion: kubescheduler.config.k8s.io/v1alpha1
-kind: KubeSchedulerConfiguration
-schedulerName: "my-old-scheduler"
-clientConnection:
-  kubeconfig: "%s"
-leaderElection:
-  leaderElect: true
-hardPodAffinitySymmetricWeight: 3`, configKubeconfig)), os.FileMode(0600)); err != nil {
-		t.Fatal(err)
-	}
-
 	// plugin config
 	pluginConfigFile := filepath.Join(tmpDir, "plugin.yaml")
 	if err := ioutil.WriteFile(pluginConfigFile, []byte(fmt.Sprintf(`
@@ -144,6 +131,19 @@ profiles:
       disabled:
       - name: "*"
 `, configKubeconfig)), os.FileMode(0600)); err != nil {
+		t.Fatal(err)
+	}
+
+	// policy config file
+	policyConfigFile := filepath.Join(tmpDir, "policy-config.yaml")
+	if err := ioutil.WriteFile(policyConfigFile, []byte(`{
+		"kind": "Policy",
+		"apiVersion": "v1",
+		"predicates": [
+		  {"name": "MatchInterPodAffinity"}
+		],"priorities": [
+		  {"name": "InterPodAffinityPriority",   "weight": 2}
+		]}`), os.FileMode(0600)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,16 +209,6 @@ profiles:
 			},
 		},
 		{
-			name: "v1alpha1 config with SchedulerName and HardPodAffinitySymmetricWeight",
-			flags: []string{
-				"--config", v1alpha1Config,
-				"--kubeconfig", configKubeconfig,
-			},
-			wantPlugins: map[string]map[string][]kubeschedulerconfig.Plugin{
-				"my-old-scheduler": defaultPlugins,
-			},
-		},
-		{
 			name: "plugin config with single profile",
 			flags: []string{
 				"--config", pluginConfigFile,
@@ -257,6 +247,98 @@ profiles:
 			},
 			wantPlugins: map[string]map[string][]kubeschedulerconfig.Plugin{
 				"my-scheduler": defaultPlugins,
+			},
+		},
+		{
+			name: "default algorithm provider",
+			flags: []string{
+				"--kubeconfig", configKubeconfig,
+				"--algorithm-provider", "DefaultProvider",
+			},
+			wantPlugins: map[string]map[string][]kubeschedulerconfig.Plugin{
+				"default-scheduler": defaultPlugins,
+			},
+		},
+		{
+			name: "cluster autoscaler provider",
+			flags: []string{
+				"--kubeconfig", configKubeconfig,
+				"--algorithm-provider", "ClusterAutoscalerProvider",
+			},
+			wantPlugins: map[string]map[string][]kubeschedulerconfig.Plugin{
+				"default-scheduler": {
+					"QueueSortPlugin": {
+						{Name: "PrioritySort"},
+					},
+					"PreFilterPlugin": {
+						{Name: "NodeResourcesFit"},
+						{Name: "NodePorts"},
+						{Name: "InterPodAffinity"},
+						{Name: "PodTopologySpread"},
+					},
+					"FilterPlugin": {
+						{Name: "NodeUnschedulable"},
+						{Name: "NodeResourcesFit"},
+						{Name: "NodeName"},
+						{Name: "NodePorts"},
+						{Name: "NodeAffinity"},
+						{Name: "VolumeRestrictions"},
+						{Name: "TaintToleration"},
+						{Name: "EBSLimits"},
+						{Name: "GCEPDLimits"},
+						{Name: "NodeVolumeLimits"},
+						{Name: "AzureDiskLimits"},
+						{Name: "VolumeBinding"},
+						{Name: "VolumeZone"},
+						{Name: "InterPodAffinity"},
+						{Name: "PodTopologySpread"},
+					},
+					"PreScorePlugin": {
+						{Name: "InterPodAffinity"},
+						{Name: "DefaultPodTopologySpread"},
+						{Name: "TaintToleration"},
+						{Name: "PodTopologySpread"},
+					},
+					"ScorePlugin": {
+						{Name: "NodeResourcesBalancedAllocation", Weight: 1},
+						{Name: "ImageLocality", Weight: 1},
+						{Name: "InterPodAffinity", Weight: 1},
+						{Name: "NodeResourcesMostAllocated", Weight: 1},
+						{Name: "NodeAffinity", Weight: 1},
+						{Name: "NodePreferAvoidPods", Weight: 10000},
+						{Name: "DefaultPodTopologySpread", Weight: 1},
+						{Name: "TaintToleration", Weight: 1},
+						{Name: "PodTopologySpread", Weight: 1},
+					},
+					"BindPlugin": {{Name: "DefaultBinder"}},
+				},
+			},
+		},
+		{
+			name: "policy config file",
+			flags: []string{
+				"--kubeconfig", configKubeconfig,
+				"--policy-config-file", policyConfigFile,
+			},
+			wantPlugins: map[string]map[string][]kubeschedulerconfig.Plugin{
+				"default-scheduler": {
+					"QueueSortPlugin": {{Name: "PrioritySort"}},
+					"PreFilterPlugin": {
+						{Name: "InterPodAffinity"},
+					},
+					"FilterPlugin": {
+						{Name: "NodeUnschedulable"},
+						{Name: "TaintToleration"},
+						{Name: "InterPodAffinity"},
+					},
+					"PreScorePlugin": {
+						{Name: "InterPodAffinity"},
+					},
+					"ScorePlugin": {
+						{Name: "InterPodAffinity", Weight: 2},
+					},
+					"BindPlugin": {{Name: "DefaultBinder"}},
+				},
 			},
 		},
 	}

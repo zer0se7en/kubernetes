@@ -27,6 +27,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/clock"
@@ -38,7 +39,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/events"
 	extenderv1 "k8s.io/kube-scheduler/extender/v1"
-	apitesting "k8s.io/kubernetes/pkg/api/testing"
+	apicore "k8s.io/kubernetes/pkg/apis/core"
 	kubefeatures "k8s.io/kubernetes/pkg/features"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config/scheme"
@@ -51,8 +52,6 @@ import (
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	internalcache "k8s.io/kubernetes/pkg/scheduler/internal/cache"
 	internalqueue "k8s.io/kubernetes/pkg/scheduler/internal/queue"
-	"k8s.io/kubernetes/pkg/scheduler/listers"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 	"k8s.io/kubernetes/pkg/scheduler/profile"
 )
 
@@ -251,7 +250,7 @@ func TestCreateFromConfigWithHardPodAffinitySymmetricWeight(t *testing.T) {
 	for _, cfg := range factory.profiles[0].PluginConfig {
 		if cfg.Name == interpodaffinity.Name {
 			foundAffinityCfg = true
-			wantArgs := runtime.Unknown{Raw: []byte(`{"hardPodAffinityWeight":10}`)}
+			wantArgs := &runtime.Unknown{Raw: []byte(`{"hardPodAffinityWeight":10}`)}
 
 			if diff := cmp.Diff(wantArgs, cfg.Args); diff != "" {
 				t.Errorf("wrong InterPodAffinity args (-want, +got): %s", diff)
@@ -314,12 +313,23 @@ func TestCreateFromConfigWithUnspecifiedPredicatesOrPriorities(t *testing.T) {
 }
 
 func TestDefaultErrorFunc(t *testing.T) {
+	grace := int64(30)
 	testPod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "bar"},
-		Spec:       apitesting.V1DeepEqualSafePodSpec(),
+		Spec: v1.PodSpec{
+			RestartPolicy:                 v1.RestartPolicyAlways,
+			DNSPolicy:                     v1.DNSClusterFirst,
+			TerminationGracePeriodSeconds: &grace,
+			SecurityContext:               &v1.PodSecurityContext{},
+		},
 	}
+
+	nodeBar, nodeFoo :=
+		&v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "bar"}},
+		&v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "foo"}}
+
 	testPodInfo := &framework.PodInfo{Pod: testPod}
-	client := fake.NewSimpleClientset(&v1.PodList{Items: []v1.Pod{*testPod}})
+	client := fake.NewSimpleClientset(&v1.PodList{Items: []v1.Pod{*testPod}}, &v1.NodeList{Items: []v1.Node{*nodeBar}})
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
@@ -328,12 +338,51 @@ func TestDefaultErrorFunc(t *testing.T) {
 	schedulerCache := internalcache.New(30*time.Second, stopCh)
 	errFunc := MakeDefaultErrorFunc(client, queue, schedulerCache)
 
-	// Trigger error handling again to put the pod in unschedulable queue
-	errFunc(testPodInfo, nil)
+	_ = schedulerCache.AddNode(nodeFoo)
+
+	// assume nodeFoo was not found
+	err := apierrors.NewNotFound(apicore.Resource("node"), nodeFoo.Name)
+	errFunc(testPodInfo, err)
+	dump := schedulerCache.Dump()
+	for _, n := range dump.Nodes {
+		if e, a := nodeFoo, n.Node(); reflect.DeepEqual(e, a) {
+			t.Errorf("Node %s is still in schedulerCache", e.Name)
+			break
+		}
+	}
 
 	// Try up to a minute to retrieve the error pod from priority queue
 	foundPodFlag := false
 	maxIterations := 10 * 60
+	for i := 0; i < maxIterations; i++ {
+		time.Sleep(100 * time.Millisecond)
+		got := getPodfromPriorityQueue(queue, testPod)
+		if got == nil {
+			continue
+		}
+
+		testClientGetPodRequest(client, t, testPod.Namespace, testPod.Name)
+
+		if e, a := testPod, got; !reflect.DeepEqual(e, a) {
+			t.Errorf("Expected %v, got %v", e, a)
+		}
+
+		foundPodFlag = true
+		break
+	}
+
+	if !foundPodFlag {
+		t.Errorf("Failed to get pod from the unschedulable queue after waiting for a minute: %v", testPod)
+	}
+
+	_ = queue.Delete(testPod)
+
+	// Trigger error handling again to put the pod in unschedulable queue
+	errFunc(testPodInfo, nil)
+
+	// Try up to a minute to retrieve the error pod from priority queue
+	foundPodFlag = false
+	maxIterations = 10 * 60
 	for i := 0; i < maxIterations; i++ {
 		time.Sleep(100 * time.Millisecond)
 		got := getPodfromPriorityQueue(queue, testPod)
@@ -423,7 +472,7 @@ func testClientGetPodRequest(client *fake.Clientset, t *testing.T, podNs string,
 	requestReceived := false
 	actions := client.Actions()
 	for _, a := range actions {
-		if a.GetVerb() == "get" {
+		if a.GetVerb() == "get" && a.GetResource().Resource == "pods" {
 			getAction, ok := a.(clienttesting.GetAction)
 			if !ok {
 				t.Errorf("Can't cast action object to GetAction interface")
@@ -492,7 +541,7 @@ func (f *fakeExtender) IsIgnorable() bool {
 func (f *fakeExtender) ProcessPreemption(
 	pod *v1.Pod,
 	nodeToVictims map[*v1.Node]*extenderv1.Victims,
-	nodeInfos listers.NodeInfoLister,
+	nodeInfos framework.NodeInfoLister,
 ) (map[*v1.Node]*extenderv1.Victims, error) {
 	return nil, nil
 }
@@ -547,6 +596,6 @@ func (t *TestPlugin) ScoreExtensions() framework.ScoreExtensions {
 	return nil
 }
 
-func (t *TestPlugin) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *schedulernodeinfo.NodeInfo) *framework.Status {
+func (t *TestPlugin) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
 	return nil
 }

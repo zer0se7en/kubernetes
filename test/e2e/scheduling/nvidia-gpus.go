@@ -28,8 +28,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	extensionsinternal "k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/test/e2e/framework"
-	"k8s.io/kubernetes/test/e2e/framework/gpu"
+	e2egpu "k8s.io/kubernetes/test/e2e/framework/gpu"
 	e2ejob "k8s.io/kubernetes/test/e2e/framework/job"
+	e2emanifest "k8s.io/kubernetes/test/e2e/framework/manifest"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	"k8s.io/kubernetes/test/e2e/framework/providers/gce"
@@ -133,11 +134,11 @@ func SetupNVIDIAGPUNode(f *framework.Framework, setupResourceGatherer bool) *fra
 	} else {
 		dsYamlURL = "https://raw.githubusercontent.com/GoogleCloudPlatform/container-engine-accelerators/master/daemonset.yaml"
 	}
-	gpuResourceName = gpu.NVIDIAGPUResourceName
+	gpuResourceName = e2egpu.NVIDIAGPUResourceName
 
 	framework.Logf("Using %v", dsYamlURL)
 	// Creates the DaemonSet that installs Nvidia Drivers.
-	ds, err := framework.DsFromManifest(dsYamlURL)
+	ds, err := e2emanifest.DaemonSetFromURL(dsYamlURL)
 	framework.ExpectNoError(err)
 	ds.Namespace = f.Namespace.Name
 	_, err = f.ClientSet.AppsV1().DaemonSets(f.Namespace.Name).Create(context.TODO(), ds, metav1.CreateOptions{})
@@ -288,11 +289,11 @@ func VerifyJobNCompletions(f *framework.Framework, completions int32) {
 	framework.Logf("Got the following pods for job cuda-add: %v", createdPodNames)
 
 	successes := int32(0)
+	regex := regexp.MustCompile("PASSED")
 	for _, podName := range createdPodNames {
 		f.PodClient().WaitForFinish(podName, 5*time.Minute)
 		logs, err := e2epod.GetPodLogs(f.ClientSet, ns, podName, "vector-addition")
 		framework.ExpectNoError(err, "Should be able to get logs for pod %v", podName)
-		regex := regexp.MustCompile("PASSED")
 		if regex.MatchString(logs) {
 			successes++
 		}

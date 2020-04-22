@@ -40,6 +40,7 @@ import (
 	policylisters "k8s.io/client-go/listers/policy/v1beta1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
+	schedulerv1alpha2 "k8s.io/kube-scheduler/config/v1alpha2"
 	"k8s.io/kubernetes/pkg/controller/volume/scheduling"
 	kubefeatures "k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler/algorithmprovider"
@@ -48,7 +49,6 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/core"
 	frameworkplugins "k8s.io/kubernetes/pkg/scheduler/framework/plugins"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultbinder"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/interpodaffinity"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/noderesources"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/queuesort"
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
@@ -104,13 +104,17 @@ type Configurator struct {
 
 	enableNonPreempting bool
 
-	profiles         []schedulerapi.KubeSchedulerProfile
-	registry         framework.Registry
-	nodeInfoSnapshot *internalcache.Snapshot
-	extenders        []schedulerapi.Extender
+	profiles          []schedulerapi.KubeSchedulerProfile
+	registry          framework.Registry
+	nodeInfoSnapshot  *internalcache.Snapshot
+	extenders         []schedulerapi.Extender
+	frameworkCapturer FrameworkCapturer
 }
 
 func (c *Configurator) buildFramework(p schedulerapi.KubeSchedulerProfile) (framework.Framework, error) {
+	if c.frameworkCapturer != nil {
+		c.frameworkCapturer(p)
+	}
 	return framework.NewFramework(
 		c.registry,
 		p.Plugins,
@@ -161,7 +165,7 @@ func (c *Configurator) create() (*Scheduler, error) {
 			prof.PluginConfig = append(prof.PluginConfig,
 				frameworkplugins.NewPluginConfig(
 					noderesources.FitName,
-					noderesources.FitArgs{IgnoredResources: ignoredExtendedResources},
+					schedulerv1alpha2.NodeResourcesFitArgs{IgnoredResources: ignoredExtendedResources},
 				),
 			)
 		}
@@ -277,7 +281,7 @@ func (c *Configurator) createFromConfig(policy schedulerapi.Policy) (*Scheduler,
 	// CLI configuration.
 	if policy.HardPodAffinitySymmetricWeight != 0 {
 		v := policy.HardPodAffinitySymmetricWeight
-		args.InterPodAffinityArgs = &interpodaffinity.Args{
+		args.InterPodAffinityArgs = &schedulerv1alpha2.InterPodAffinityArgs{
 			HardPodAffinityWeight: &v,
 		}
 	}
@@ -338,7 +342,7 @@ func (c *Configurator) createFromConfig(policy schedulerapi.Policy) (*Scheduler,
 // mergePluginConfigsFromPolicy merges the giving plugin configs ensuring that,
 // if a plugin name is repeated, the arguments are the same.
 func mergePluginConfigsFromPolicy(pc1, pc2 []schedulerapi.PluginConfig) ([]schedulerapi.PluginConfig, error) {
-	args := make(map[string]runtime.Unknown)
+	args := make(map[string]runtime.Object)
 	for _, c := range pc1 {
 		args[c.Name] = c.Args
 	}
@@ -457,26 +461,24 @@ func MakeDefaultErrorFunc(client clientset.Interface, podQueue internalqueue.Sch
 		pod := podInfo.Pod
 		if err == core.ErrNoNodesAvailable {
 			klog.V(2).Infof("Unable to schedule %v/%v: no nodes are registered to the cluster; waiting", pod.Namespace, pod.Name)
-		} else {
-			if _, ok := err.(*core.FitError); ok {
-				klog.V(2).Infof("Unable to schedule %v/%v: no fit: %v; waiting", pod.Namespace, pod.Name, err)
-			} else if apierrors.IsNotFound(err) {
-				klog.V(2).Infof("Unable to schedule %v/%v: possibly due to node not found: %v; waiting", pod.Namespace, pod.Name, err)
-				if errStatus, ok := err.(apierrors.APIStatus); ok && errStatus.Status().Details.Kind == "node" {
-					nodeName := errStatus.Status().Details.Name
-					// when node is not found, We do not remove the node right away. Trying again to get
-					// the node and if the node is still not found, then remove it from the scheduler cache.
-					_, err := client.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
-					if err != nil && apierrors.IsNotFound(err) {
-						node := v1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
-						if err := schedulerCache.RemoveNode(&node); err != nil {
-							klog.V(4).Infof("Node %q is not found; failed to remove it from the cache.", node.Name)
-						}
+		} else if _, ok := err.(*core.FitError); ok {
+			klog.V(2).Infof("Unable to schedule %v/%v: no fit: %v; waiting", pod.Namespace, pod.Name, err)
+		} else if apierrors.IsNotFound(err) {
+			klog.V(2).Infof("Unable to schedule %v/%v: possibly due to node not found: %v; waiting", pod.Namespace, pod.Name, err)
+			if errStatus, ok := err.(apierrors.APIStatus); ok && errStatus.Status().Details.Kind == "node" {
+				nodeName := errStatus.Status().Details.Name
+				// when node is not found, We do not remove the node right away. Trying again to get
+				// the node and if the node is still not found, then remove it from the scheduler cache.
+				_, err := client.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
+				if err != nil && apierrors.IsNotFound(err) {
+					node := v1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
+					if err := schedulerCache.RemoveNode(&node); err != nil {
+						klog.V(4).Infof("Node %q is not found; failed to remove it from the cache.", node.Name)
 					}
 				}
-			} else {
-				klog.Errorf("Error scheduling %v/%v: %v; retrying", pod.Namespace, pod.Name, err)
 			}
+		} else {
+			klog.Errorf("Error scheduling %v/%v: %v; retrying", pod.Namespace, pod.Name, err)
 		}
 
 		podSchedulingCycle := podQueue.SchedulingCycle()

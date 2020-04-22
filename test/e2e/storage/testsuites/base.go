@@ -40,10 +40,10 @@ import (
 	"k8s.io/component-base/metrics/testutil"
 	csitrans "k8s.io/csi-translation-lib"
 	"k8s.io/kubernetes/test/e2e/framework"
-	"k8s.io/kubernetes/test/e2e/framework/metrics"
+	e2emetrics "k8s.io/kubernetes/test/e2e/framework/metrics"
 	e2epv "k8s.io/kubernetes/test/e2e/framework/pv"
 	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
-	"k8s.io/kubernetes/test/e2e/framework/volume"
+	e2evolume "k8s.io/kubernetes/test/e2e/framework/volume"
 	"k8s.io/kubernetes/test/e2e/storage/podlogs"
 	"k8s.io/kubernetes/test/e2e/storage/testpatterns"
 )
@@ -59,6 +59,27 @@ func init() {
 }
 
 type opCounts map[string]int64
+
+// BaseSuites is a list of storage test suites that work for in-tree and CSI drivers
+var BaseSuites = []func() TestSuite{
+	InitVolumesTestSuite,
+	InitVolumeIOTestSuite,
+	InitVolumeModeTestSuite,
+	InitSubPathTestSuite,
+	InitProvisioningTestSuite,
+	InitMultiVolumeTestSuite,
+	InitVolumeExpandTestSuite,
+	InitDisruptiveTestSuite,
+	InitVolumeLimitsTestSuite,
+	InitTopologyTestSuite,
+	InitStressTestSuite,
+}
+
+// CSISuites is a list of storage test suites that work only for CSI drivers
+var CSISuites = append(BaseSuites,
+	InitEphemeralTestSuite,
+	InitSnapshottableTestSuite,
+)
 
 // TestSuite represents an interface for a set of tests which works with TestDriver
 type TestSuite interface {
@@ -77,7 +98,7 @@ type TestSuiteInfo struct {
 	Name               string                     // name of the TestSuite
 	FeatureTag         string                     // featureTag for the TestSuite
 	TestPatterns       []testpatterns.TestPattern // Slice of TestPattern for the TestSuite
-	SupportedSizeRange volume.SizeRange           // Size range supported by the test suite
+	SupportedSizeRange e2evolume.SizeRange        // Size range supported by the test suite
 }
 
 func getTestNameStr(suite TestSuite, pattern testpatterns.TestPattern) string {
@@ -181,7 +202,7 @@ type VolumeResource struct {
 
 // CreateVolumeResource constructs a VolumeResource for the current test. It knows how to deal with
 // different test pattern volume types.
-func CreateVolumeResource(driver TestDriver, config *PerTestConfig, pattern testpatterns.TestPattern, testVolumeSizeRange volume.SizeRange) *VolumeResource {
+func CreateVolumeResource(driver TestDriver, config *PerTestConfig, pattern testpatterns.TestPattern, testVolumeSizeRange e2evolume.SizeRange) *VolumeResource {
 	r := VolumeResource{
 		Config:  config,
 		Pattern: pattern,
@@ -292,7 +313,7 @@ func (r *VolumeResource) CleanupResource() error {
 					cleanUpErrs = append(cleanUpErrs, errors.Wrapf(err, "Failed to delete PVC %v", r.Pvc.Name))
 				}
 				if r.Pv != nil {
-					err = framework.WaitForPersistentVolumeDeleted(f.ClientSet, r.Pv.Name, 5*time.Second, 5*time.Minute)
+					err = e2epv.WaitForPersistentVolumeDeleted(f.ClientSet, r.Pv.Name, 5*time.Second, 5*time.Minute)
 					if err != nil {
 						cleanUpErrs = append(cleanUpErrs, errors.Wrapf(err,
 							"Persistent Volume %v not deleted by dynamic provisioner", r.Pv.Name))
@@ -423,12 +444,12 @@ func deleteStorageClass(cs clientset.Interface, className string) error {
 // the testsuites package whereas volume.TestConfig is merely
 // an implementation detail. It contains fields that have no effect,
 // which makes it unsuitable for use in the testsuits public API.
-func convertTestConfig(in *PerTestConfig) volume.TestConfig {
+func convertTestConfig(in *PerTestConfig) e2evolume.TestConfig {
 	if in.ServerConfig != nil {
 		return *in.ServerConfig
 	}
 
-	return volume.TestConfig{
+	return e2evolume.TestConfig{
 		Namespace:           in.Framework.Namespace.Name,
 		Prefix:              in.Prefix,
 		ClientNodeSelection: in.ClientNodeSelection,
@@ -439,7 +460,7 @@ func convertTestConfig(in *PerTestConfig) volume.TestConfig {
 // intersection of the intervals (if it exists) and return the minimum of the intersection
 // to be used as the claim size for the test.
 // if value not set, that means there's no minimum or maximum size limitation and we set default size for it.
-func getSizeRangesIntersection(first volume.SizeRange, second volume.SizeRange) (string, error) {
+func getSizeRangesIntersection(first e2evolume.SizeRange, second e2evolume.SizeRange) (string, error) {
 	var firstMin, firstMax, secondMin, secondMax resource.Quantity
 	var err error
 
@@ -575,7 +596,7 @@ func getVolumeOpCounts(c clientset.Interface, pluginName string) opCounts {
 
 	nodeLimit := 25
 
-	metricsGrabber, err := metrics.NewMetricsGrabber(c, nil, true, false, true, false, false)
+	metricsGrabber, err := e2emetrics.NewMetricsGrabber(c, nil, true, false, true, false, false)
 
 	if err != nil {
 		framework.ExpectNoError(err, "Error creating metrics grabber: %v", err)
