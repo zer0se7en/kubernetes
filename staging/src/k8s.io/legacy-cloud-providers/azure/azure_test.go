@@ -26,8 +26,6 @@ import (
 	"strings"
 	"testing"
 
-	cloudprovider "k8s.io/cloud-provider"
-
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-12-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2019-06-01/network"
 	"github.com/Azure/go-autorest/autorest/to"
@@ -38,6 +36,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	cloudprovider "k8s.io/cloud-provider"
 	servicehelpers "k8s.io/cloud-provider/service/helpers"
 	"k8s.io/legacy-cloud-providers/azure/clients/interfaceclient/mockinterfaceclient"
 	"k8s.io/legacy-cloud-providers/azure/clients/loadbalancerclient/mockloadbalancerclient"
@@ -2151,9 +2150,14 @@ func TestGetNodeNameByProviderID(t *testing.T) {
 			fail:       false,
 		},
 		{
+			providerID: "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myResourceGroupName/providers/Microsoft.Compute/virtualMachines/k8s-agent-AAAAAAAA-1",
+			name:       "k8s-agent-AAAAAAAA-1",
+			fail:       false,
+		},
+		{
 			providerID: CloudProviderName + ":/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myResourceGroupName/providers/Microsoft.Compute/virtualMachines/k8s-agent-AAAAAAAA-0",
-			name:       "",
-			fail:       true,
+			name:       "k8s-agent-AAAAAAAA-0",
+			fail:       false,
 		},
 		{
 			providerID: CloudProviderName + "://",
@@ -2162,20 +2166,20 @@ func TestGetNodeNameByProviderID(t *testing.T) {
 		},
 		{
 			providerID: ":///subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myResourceGroupName/providers/Microsoft.Compute/virtualMachines/k8s-agent-AAAAAAAA-0",
-			name:       "",
-			fail:       true,
+			name:       "k8s-agent-AAAAAAAA-0",
+			fail:       false,
 		},
 		{
 			providerID: "aws:///subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myResourceGroupName/providers/Microsoft.Compute/virtualMachines/k8s-agent-AAAAAAAA-0",
-			name:       "",
-			fail:       true,
+			name:       "k8s-agent-AAAAAAAA-0",
+			fail:       false,
 		},
 	}
 
 	for _, test := range providers {
 		name, err := az.vmSet.GetNodeNameByProviderID(test.providerID)
 		if (err != nil) != test.fail {
-			t.Errorf("Expected to failt=%t, with pattern %v", test.fail, test)
+			t.Errorf("Expected to fail=%t, with pattern %v", test.fail, test)
 		}
 
 		if test.fail {
