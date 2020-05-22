@@ -21,7 +21,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/version"
 	clientset "k8s.io/client-go/kubernetes"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	kubeletconfig "k8s.io/kubelet/config/v1beta1"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/initsystem"
 	utilsexec "k8s.io/utils/exec"
@@ -103,6 +103,12 @@ func (kc *kubeletConfig) Default(cfg *kubeadmapi.ClusterConfiguration, _ *kubead
 
 	if kc.config.FeatureGates == nil {
 		kc.config.FeatureGates = map[string]bool{}
+	}
+
+	// TODO: The following code should be removed after dual-stack is GA.
+	// Note: The user still retains the ability to explicitly set feature-gates and that value will overwrite this base value.
+	if enabled, present := cfg.FeatureGates[features.IPv6DualStack]; present {
+		kc.config.FeatureGates[features.IPv6DualStack] = enabled
 	}
 
 	if kc.config.StaticPodPath == "" {

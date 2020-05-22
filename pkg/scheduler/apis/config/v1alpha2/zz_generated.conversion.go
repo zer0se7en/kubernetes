@@ -50,16 +50,6 @@ func RegisterConversions(s *runtime.Scheme) error {
 	}); err != nil {
 		return err
 	}
-	if err := s.AddGeneratedConversionFunc((*v1alpha2.KubeSchedulerLeaderElectionConfiguration)(nil), (*config.KubeSchedulerLeaderElectionConfiguration)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_v1alpha2_KubeSchedulerLeaderElectionConfiguration_To_config_KubeSchedulerLeaderElectionConfiguration(a.(*v1alpha2.KubeSchedulerLeaderElectionConfiguration), b.(*config.KubeSchedulerLeaderElectionConfiguration), scope)
-	}); err != nil {
-		return err
-	}
-	if err := s.AddGeneratedConversionFunc((*config.KubeSchedulerLeaderElectionConfiguration)(nil), (*v1alpha2.KubeSchedulerLeaderElectionConfiguration)(nil), func(a, b interface{}, scope conversion.Scope) error {
-		return Convert_config_KubeSchedulerLeaderElectionConfiguration_To_v1alpha2_KubeSchedulerLeaderElectionConfiguration(a.(*config.KubeSchedulerLeaderElectionConfiguration), b.(*v1alpha2.KubeSchedulerLeaderElectionConfiguration), scope)
-	}); err != nil {
-		return err
-	}
 	if err := s.AddGeneratedConversionFunc((*v1alpha2.KubeSchedulerProfile)(nil), (*config.KubeSchedulerProfile)(nil), func(a, b interface{}, scope conversion.Scope) error {
 		return Convert_v1alpha2_KubeSchedulerProfile_To_config_KubeSchedulerProfile(a.(*v1alpha2.KubeSchedulerProfile), b.(*config.KubeSchedulerProfile), scope)
 	}); err != nil {
@@ -87,6 +77,26 @@ func RegisterConversions(s *runtime.Scheme) error {
 	}
 	if err := s.AddGeneratedConversionFunc((*config.NodeResourcesFitArgs)(nil), (*v1alpha2.NodeResourcesFitArgs)(nil), func(a, b interface{}, scope conversion.Scope) error {
 		return Convert_config_NodeResourcesFitArgs_To_v1alpha2_NodeResourcesFitArgs(a.(*config.NodeResourcesFitArgs), b.(*v1alpha2.NodeResourcesFitArgs), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*v1alpha2.NodeResourcesLeastAllocatedArgs)(nil), (*config.NodeResourcesLeastAllocatedArgs)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1alpha2_NodeResourcesLeastAllocatedArgs_To_config_NodeResourcesLeastAllocatedArgs(a.(*v1alpha2.NodeResourcesLeastAllocatedArgs), b.(*config.NodeResourcesLeastAllocatedArgs), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*config.NodeResourcesLeastAllocatedArgs)(nil), (*v1alpha2.NodeResourcesLeastAllocatedArgs)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_NodeResourcesLeastAllocatedArgs_To_v1alpha2_NodeResourcesLeastAllocatedArgs(a.(*config.NodeResourcesLeastAllocatedArgs), b.(*v1alpha2.NodeResourcesLeastAllocatedArgs), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*v1alpha2.NodeResourcesMostAllocatedArgs)(nil), (*config.NodeResourcesMostAllocatedArgs)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1alpha2_NodeResourcesMostAllocatedArgs_To_config_NodeResourcesMostAllocatedArgs(a.(*v1alpha2.NodeResourcesMostAllocatedArgs), b.(*config.NodeResourcesMostAllocatedArgs), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*config.NodeResourcesMostAllocatedArgs)(nil), (*v1alpha2.NodeResourcesMostAllocatedArgs)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_config_NodeResourcesMostAllocatedArgs_To_v1alpha2_NodeResourcesMostAllocatedArgs(a.(*config.NodeResourcesMostAllocatedArgs), b.(*v1alpha2.NodeResourcesMostAllocatedArgs), scope)
 	}); err != nil {
 		return err
 	}
@@ -218,7 +228,7 @@ func Convert_config_InterPodAffinityArgs_To_v1alpha2_InterPodAffinityArgs(in *co
 }
 
 func autoConvert_v1alpha2_KubeSchedulerConfiguration_To_config_KubeSchedulerConfiguration(in *v1alpha2.KubeSchedulerConfiguration, out *config.KubeSchedulerConfiguration, s conversion.Scope) error {
-	if err := Convert_v1alpha2_KubeSchedulerLeaderElectionConfiguration_To_config_KubeSchedulerLeaderElectionConfiguration(&in.LeaderElection, &out.LeaderElection, s); err != nil {
+	if err := v1alpha1.Convert_v1alpha1_LeaderElectionConfiguration_To_config_LeaderElectionConfiguration(&in.LeaderElection, &out.LeaderElection, s); err != nil {
 		return err
 	}
 	if err := v1alpha1.Convert_v1alpha1_ClientConnectionConfiguration_To_config_ClientConnectionConfiguration(&in.ClientConnection, &out.ClientConnection, s); err != nil {
@@ -265,7 +275,7 @@ func autoConvert_v1alpha2_KubeSchedulerConfiguration_To_config_KubeSchedulerConf
 
 func autoConvert_config_KubeSchedulerConfiguration_To_v1alpha2_KubeSchedulerConfiguration(in *config.KubeSchedulerConfiguration, out *v1alpha2.KubeSchedulerConfiguration, s conversion.Scope) error {
 	// WARNING: in.AlgorithmSource requires manual conversion: does not exist in peer-type
-	if err := Convert_config_KubeSchedulerLeaderElectionConfiguration_To_v1alpha2_KubeSchedulerLeaderElectionConfiguration(&in.LeaderElection, &out.LeaderElection, s); err != nil {
+	if err := v1alpha1.Convert_config_LeaderElectionConfiguration_To_v1alpha1_LeaderElectionConfiguration(&in.LeaderElection, &out.LeaderElection, s); err != nil {
 		return err
 	}
 	if err := v1alpha1.Convert_config_ClientConnectionConfiguration_To_v1alpha1_ClientConnectionConfiguration(&in.ClientConnection, &out.ClientConnection, s); err != nil {
@@ -308,30 +318,6 @@ func autoConvert_config_KubeSchedulerConfiguration_To_v1alpha2_KubeSchedulerConf
 	}
 	out.Extenders = *(*[]configv1.Extender)(unsafe.Pointer(&in.Extenders))
 	return nil
-}
-
-func autoConvert_v1alpha2_KubeSchedulerLeaderElectionConfiguration_To_config_KubeSchedulerLeaderElectionConfiguration(in *v1alpha2.KubeSchedulerLeaderElectionConfiguration, out *config.KubeSchedulerLeaderElectionConfiguration, s conversion.Scope) error {
-	if err := v1alpha1.Convert_v1alpha1_LeaderElectionConfiguration_To_config_LeaderElectionConfiguration(&in.LeaderElectionConfiguration, &out.LeaderElectionConfiguration, s); err != nil {
-		return err
-	}
-	return nil
-}
-
-// Convert_v1alpha2_KubeSchedulerLeaderElectionConfiguration_To_config_KubeSchedulerLeaderElectionConfiguration is an autogenerated conversion function.
-func Convert_v1alpha2_KubeSchedulerLeaderElectionConfiguration_To_config_KubeSchedulerLeaderElectionConfiguration(in *v1alpha2.KubeSchedulerLeaderElectionConfiguration, out *config.KubeSchedulerLeaderElectionConfiguration, s conversion.Scope) error {
-	return autoConvert_v1alpha2_KubeSchedulerLeaderElectionConfiguration_To_config_KubeSchedulerLeaderElectionConfiguration(in, out, s)
-}
-
-func autoConvert_config_KubeSchedulerLeaderElectionConfiguration_To_v1alpha2_KubeSchedulerLeaderElectionConfiguration(in *config.KubeSchedulerLeaderElectionConfiguration, out *v1alpha2.KubeSchedulerLeaderElectionConfiguration, s conversion.Scope) error {
-	if err := v1alpha1.Convert_config_LeaderElectionConfiguration_To_v1alpha1_LeaderElectionConfiguration(&in.LeaderElectionConfiguration, &out.LeaderElectionConfiguration, s); err != nil {
-		return err
-	}
-	return nil
-}
-
-// Convert_config_KubeSchedulerLeaderElectionConfiguration_To_v1alpha2_KubeSchedulerLeaderElectionConfiguration is an autogenerated conversion function.
-func Convert_config_KubeSchedulerLeaderElectionConfiguration_To_v1alpha2_KubeSchedulerLeaderElectionConfiguration(in *config.KubeSchedulerLeaderElectionConfiguration, out *v1alpha2.KubeSchedulerLeaderElectionConfiguration, s conversion.Scope) error {
-	return autoConvert_config_KubeSchedulerLeaderElectionConfiguration_To_v1alpha2_KubeSchedulerLeaderElectionConfiguration(in, out, s)
 }
 
 func autoConvert_v1alpha2_KubeSchedulerProfile_To_config_KubeSchedulerProfile(in *v1alpha2.KubeSchedulerProfile, out *config.KubeSchedulerProfile, s conversion.Scope) error {
@@ -442,6 +428,46 @@ func autoConvert_config_NodeResourcesFitArgs_To_v1alpha2_NodeResourcesFitArgs(in
 // Convert_config_NodeResourcesFitArgs_To_v1alpha2_NodeResourcesFitArgs is an autogenerated conversion function.
 func Convert_config_NodeResourcesFitArgs_To_v1alpha2_NodeResourcesFitArgs(in *config.NodeResourcesFitArgs, out *v1alpha2.NodeResourcesFitArgs, s conversion.Scope) error {
 	return autoConvert_config_NodeResourcesFitArgs_To_v1alpha2_NodeResourcesFitArgs(in, out, s)
+}
+
+func autoConvert_v1alpha2_NodeResourcesLeastAllocatedArgs_To_config_NodeResourcesLeastAllocatedArgs(in *v1alpha2.NodeResourcesLeastAllocatedArgs, out *config.NodeResourcesLeastAllocatedArgs, s conversion.Scope) error {
+	out.Resources = *(*[]config.ResourceSpec)(unsafe.Pointer(&in.Resources))
+	return nil
+}
+
+// Convert_v1alpha2_NodeResourcesLeastAllocatedArgs_To_config_NodeResourcesLeastAllocatedArgs is an autogenerated conversion function.
+func Convert_v1alpha2_NodeResourcesLeastAllocatedArgs_To_config_NodeResourcesLeastAllocatedArgs(in *v1alpha2.NodeResourcesLeastAllocatedArgs, out *config.NodeResourcesLeastAllocatedArgs, s conversion.Scope) error {
+	return autoConvert_v1alpha2_NodeResourcesLeastAllocatedArgs_To_config_NodeResourcesLeastAllocatedArgs(in, out, s)
+}
+
+func autoConvert_config_NodeResourcesLeastAllocatedArgs_To_v1alpha2_NodeResourcesLeastAllocatedArgs(in *config.NodeResourcesLeastAllocatedArgs, out *v1alpha2.NodeResourcesLeastAllocatedArgs, s conversion.Scope) error {
+	out.Resources = *(*[]v1alpha2.ResourceSpec)(unsafe.Pointer(&in.Resources))
+	return nil
+}
+
+// Convert_config_NodeResourcesLeastAllocatedArgs_To_v1alpha2_NodeResourcesLeastAllocatedArgs is an autogenerated conversion function.
+func Convert_config_NodeResourcesLeastAllocatedArgs_To_v1alpha2_NodeResourcesLeastAllocatedArgs(in *config.NodeResourcesLeastAllocatedArgs, out *v1alpha2.NodeResourcesLeastAllocatedArgs, s conversion.Scope) error {
+	return autoConvert_config_NodeResourcesLeastAllocatedArgs_To_v1alpha2_NodeResourcesLeastAllocatedArgs(in, out, s)
+}
+
+func autoConvert_v1alpha2_NodeResourcesMostAllocatedArgs_To_config_NodeResourcesMostAllocatedArgs(in *v1alpha2.NodeResourcesMostAllocatedArgs, out *config.NodeResourcesMostAllocatedArgs, s conversion.Scope) error {
+	out.Resources = *(*[]config.ResourceSpec)(unsafe.Pointer(&in.Resources))
+	return nil
+}
+
+// Convert_v1alpha2_NodeResourcesMostAllocatedArgs_To_config_NodeResourcesMostAllocatedArgs is an autogenerated conversion function.
+func Convert_v1alpha2_NodeResourcesMostAllocatedArgs_To_config_NodeResourcesMostAllocatedArgs(in *v1alpha2.NodeResourcesMostAllocatedArgs, out *config.NodeResourcesMostAllocatedArgs, s conversion.Scope) error {
+	return autoConvert_v1alpha2_NodeResourcesMostAllocatedArgs_To_config_NodeResourcesMostAllocatedArgs(in, out, s)
+}
+
+func autoConvert_config_NodeResourcesMostAllocatedArgs_To_v1alpha2_NodeResourcesMostAllocatedArgs(in *config.NodeResourcesMostAllocatedArgs, out *v1alpha2.NodeResourcesMostAllocatedArgs, s conversion.Scope) error {
+	out.Resources = *(*[]v1alpha2.ResourceSpec)(unsafe.Pointer(&in.Resources))
+	return nil
+}
+
+// Convert_config_NodeResourcesMostAllocatedArgs_To_v1alpha2_NodeResourcesMostAllocatedArgs is an autogenerated conversion function.
+func Convert_config_NodeResourcesMostAllocatedArgs_To_v1alpha2_NodeResourcesMostAllocatedArgs(in *config.NodeResourcesMostAllocatedArgs, out *v1alpha2.NodeResourcesMostAllocatedArgs, s conversion.Scope) error {
+	return autoConvert_config_NodeResourcesMostAllocatedArgs_To_v1alpha2_NodeResourcesMostAllocatedArgs(in, out, s)
 }
 
 func autoConvert_v1alpha2_Plugin_To_config_Plugin(in *v1alpha2.Plugin, out *config.Plugin, s conversion.Scope) error {

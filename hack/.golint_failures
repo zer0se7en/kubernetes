@@ -101,6 +101,7 @@ pkg/kubelet/apis/config/v1beta1
 pkg/kubelet/cm
 pkg/kubelet/container
 pkg/kubelet/container/testing
+pkg/kubelet/cri/remote
 pkg/kubelet/dockershim
 pkg/kubelet/dockershim/libdocker
 pkg/kubelet/dockershim/network
@@ -113,7 +114,6 @@ pkg/kubelet/lifecycle
 pkg/kubelet/pluginmanager/pluginwatcher
 pkg/kubelet/pod/testing
 pkg/kubelet/preemption
-pkg/kubelet/remote
 pkg/kubelet/stats
 pkg/kubelet/sysctl
 pkg/kubelet/types
@@ -262,8 +262,6 @@ staging/src/k8s.io/apimachinery/pkg/api/apitesting/fuzzer
 staging/src/k8s.io/apimachinery/pkg/api/apitesting/roundtrip
 staging/src/k8s.io/apimachinery/pkg/api/meta
 staging/src/k8s.io/apimachinery/pkg/api/resource
-staging/src/k8s.io/apimachinery/pkg/api/validation
-staging/src/k8s.io/apimachinery/pkg/api/validation/path
 staging/src/k8s.io/apimachinery/pkg/apis/meta/fuzzer
 staging/src/k8s.io/apimachinery/pkg/apis/meta/internalversion
 staging/src/k8s.io/apimachinery/pkg/apis/meta/v1

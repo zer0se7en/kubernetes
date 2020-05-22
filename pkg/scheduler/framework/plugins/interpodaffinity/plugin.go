@@ -18,7 +18,6 @@ package interpodaffinity
 
 import (
 	"fmt"
-	"sync"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -30,8 +29,6 @@ const (
 	// Name is the name of the plugin used in the plugin registry and configurations.
 	Name = "InterPodAffinity"
 
-	// DefaultHardPodAffinityWeight is the default HardPodAffinityWeight.
-	DefaultHardPodAffinityWeight int32 = 1
 	// MinHardPodAffinityWeight is the minimum HardPodAffinityWeight.
 	MinHardPodAffinityWeight int32 = 0
 	// MaxHardPodAffinityWeight is the maximum HardPodAffinityWeight.
@@ -47,7 +44,6 @@ var _ framework.ScorePlugin = &InterPodAffinity{}
 type InterPodAffinity struct {
 	args         config.InterPodAffinityArgs
 	sharedLister framework.SharedLister
-	sync.Mutex
 }
 
 // Name returns name of the plugin. It is used in logs, etc.
@@ -79,11 +75,6 @@ func New(plArgs runtime.Object, h framework.FrameworkHandle) (framework.Plugin, 
 }
 
 func getArgs(obj runtime.Object) (config.InterPodAffinityArgs, error) {
-	if obj == nil {
-		return config.InterPodAffinityArgs{
-			HardPodAffinityWeight: DefaultHardPodAffinityWeight,
-		}, nil
-	}
 	ptr, ok := obj.(*config.InterPodAffinityArgs)
 	if !ok {
 		return config.InterPodAffinityArgs{}, fmt.Errorf("want args to be of type InterPodAffinityArgs, got %T", obj)
