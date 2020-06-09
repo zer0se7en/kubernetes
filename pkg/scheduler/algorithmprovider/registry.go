@@ -20,9 +20,6 @@ import (
 	"sort"
 	"strings"
 
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	"k8s.io/klog/v2"
-	"k8s.io/kubernetes/pkg/features"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultbinder"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultpodtopologyspread"
@@ -52,10 +49,7 @@ type Registry map[string]*schedulerapi.Plugins
 // NewRegistry returns an algorithm provider registry instance.
 func NewRegistry() Registry {
 	defaultConfig := getDefaultConfig()
-	applyFeatureGates(defaultConfig)
-
 	caConfig := getClusterAutoscalerConfig()
-	applyFeatureGates(caConfig)
 
 	return Registry{
 		schedulerapi.SchedulerDefaultProviderName: defaultConfig,
@@ -85,6 +79,7 @@ func getDefaultConfig() *schedulerapi.Plugins {
 			Enabled: []schedulerapi.Plugin{
 				{Name: noderesources.FitName},
 				{Name: nodeports.Name},
+				{Name: podtopologyspread.Name},
 				{Name: interpodaffinity.Name},
 			},
 		},
@@ -103,12 +98,14 @@ func getDefaultConfig() *schedulerapi.Plugins {
 				{Name: nodevolumelimits.AzureDiskName},
 				{Name: volumebinding.Name},
 				{Name: volumezone.Name},
+				{Name: podtopologyspread.Name},
 				{Name: interpodaffinity.Name},
 			},
 		},
 		PreScore: &schedulerapi.PluginSet{
 			Enabled: []schedulerapi.Plugin{
 				{Name: interpodaffinity.Name},
+				{Name: podtopologyspread.Name},
 				{Name: defaultpodtopologyspread.Name},
 				{Name: tainttoleration.Name},
 			},
@@ -121,6 +118,10 @@ func getDefaultConfig() *schedulerapi.Plugins {
 				{Name: noderesources.LeastAllocatedName, Weight: 1},
 				{Name: nodeaffinity.Name, Weight: 1},
 				{Name: nodepreferavoidpods.Name, Weight: 10000},
+				// Weight is doubled because:
+				// - This is a score coming from user preference.
+				// - It makes its signal comparable to NodeResourcesLeastAllocated.
+				{Name: podtopologyspread.Name, Weight: 2},
 				{Name: defaultpodtopologyspread.Name, Weight: 1},
 				{Name: tainttoleration.Name, Weight: 1},
 			},
@@ -162,29 +163,4 @@ func getClusterAutoscalerConfig() *schedulerapi.Plugins {
 		}
 	}
 	return caConfig
-}
-
-func applyFeatureGates(config *schedulerapi.Plugins) {
-	// Only add EvenPodsSpread if the feature is enabled.
-	if utilfeature.DefaultFeatureGate.Enabled(features.EvenPodsSpread) {
-		klog.Infof("Registering EvenPodsSpread predicate and priority function")
-		f := schedulerapi.Plugin{Name: podtopologyspread.Name}
-		config.PreFilter.Enabled = append(config.PreFilter.Enabled, f)
-		config.Filter.Enabled = append(config.Filter.Enabled, f)
-		config.PreScore.Enabled = append(config.PreScore.Enabled, f)
-		// Weight is doubled because:
-		// - This is a score coming from user preference.
-		// - It makes its signal comparable to NodeResourcesLeastAllocated.
-		s := schedulerapi.Plugin{Name: podtopologyspread.Name, Weight: 2}
-		config.Score.Enabled = append(config.Score.Enabled, s)
-	}
-
-	// Prioritizes nodes that satisfy pod's resource limits
-	if utilfeature.DefaultFeatureGate.Enabled(features.ResourceLimitsPriorityFunction) {
-		klog.Infof("Registering resourcelimits priority function")
-		s := schedulerapi.Plugin{Name: noderesources.ResourceLimitsName}
-		config.PreScore.Enabled = append(config.PreScore.Enabled, s)
-		s = schedulerapi.Plugin{Name: noderesources.ResourceLimitsName, Weight: 1}
-		config.Score.Enabled = append(config.Score.Enabled, s)
-	}
 }

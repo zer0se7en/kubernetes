@@ -41,7 +41,6 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/apis/config/scheme"
 	"k8s.io/kubernetes/pkg/scheduler/core"
 	frameworkplugins "k8s.io/kubernetes/pkg/scheduler/framework/plugins"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/volumebinding"
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	internalcache "k8s.io/kubernetes/pkg/scheduler/internal/cache"
 	internalqueue "k8s.io/kubernetes/pkg/scheduler/internal/queue"
@@ -56,20 +55,12 @@ const (
 	pluginMetricsSamplePercent = 10
 )
 
-// podConditionUpdater updates the condition of a pod based on the passed
-// PodCondition
-// TODO (ahmad-diaa): Remove type and replace it with scheduler methods
-type podConditionUpdater interface {
-	update(pod *v1.Pod, podCondition *v1.PodCondition) error
-}
-
 // PodPreemptor has methods needed to delete a pod and to update 'NominatedPod'
 // field of the preemptor pod.
 // TODO (ahmad-diaa): Remove type and replace it with scheduler methods
 type podPreemptor interface {
 	getUpdatedPod(pod *v1.Pod) (*v1.Pod, error)
 	deletePod(pod *v1.Pod) error
-	setNominatedNodeName(pod *v1.Pod, nominatedNode string) error
 	removeNominatedNodeName(pod *v1.Pod) error
 }
 
@@ -81,10 +72,6 @@ type Scheduler struct {
 	SchedulerCache internalcache.Cache
 
 	Algorithm core.ScheduleAlgorithm
-	// PodConditionUpdater is used only in case of scheduling errors. If we succeed
-	// with scheduling, PodScheduled condition will be updated in apiserver in /bind
-	// handler so that binding and setting PodCondition it is atomic.
-	podConditionUpdater podConditionUpdater
 	// PodPreemptor is used to evict pods and update 'NominatedNode' field of
 	// the preemptor pod.
 	podPreemptor podPreemptor
@@ -112,6 +99,8 @@ type Scheduler struct {
 	Profiles profile.Map
 
 	scheduledPodsHasSynced func() bool
+
+	client clientset.Interface
 }
 
 // Cache returns the cache in scheduler for test to check the data in scheduler.
@@ -123,7 +112,6 @@ type schedulerOptions struct {
 	schedulerAlgorithmSource schedulerapi.SchedulerAlgorithmSource
 	disablePreemption        bool
 	percentageOfNodesToScore int32
-	bindTimeoutSeconds       int64
 	podInitialBackoffSeconds int64
 	podMaxBackoffSeconds     int64
 	// Contains out-of-tree plugins to be merged with the in-tree registry.
@@ -162,13 +150,6 @@ func WithPreemptionDisabled(disablePreemption bool) Option {
 func WithPercentageOfNodesToScore(percentageOfNodesToScore int32) Option {
 	return func(o *schedulerOptions) {
 		o.percentageOfNodesToScore = percentageOfNodesToScore
-	}
-}
-
-// WithBindTimeoutSeconds sets bindTimeoutSeconds for Scheduler, the default value is 100
-func WithBindTimeoutSeconds(bindTimeoutSeconds int64) Option {
-	return func(o *schedulerOptions) {
-		o.bindTimeoutSeconds = bindTimeoutSeconds
 	}
 }
 
@@ -221,7 +202,6 @@ var defaultSchedulerOptions = schedulerOptions{
 	},
 	disablePreemption:        false,
 	percentageOfNodesToScore: schedulerapi.DefaultPercentageOfNodesToScore,
-	bindTimeoutSeconds:       volumebinding.DefaultBindTimeoutSeconds,
 	podInitialBackoffSeconds: int64(internalqueue.DefaultPodInitialBackoffDuration.Seconds()),
 	podMaxBackoffSeconds:     int64(internalqueue.DefaultPodMaxBackoffDuration.Seconds()),
 }
@@ -262,7 +242,6 @@ func New(client clientset.Interface,
 		StopEverything:           stopEverything,
 		disablePreemption:        options.disablePreemption,
 		percentageOfNodesToScore: options.percentageOfNodesToScore,
-		bindTimeoutSeconds:       options.bindTimeoutSeconds,
 		podInitialBackoffSeconds: options.podInitialBackoffSeconds,
 		podMaxBackoffSeconds:     options.podMaxBackoffSeconds,
 		profiles:                 append([]schedulerapi.KubeSchedulerProfile(nil), options.profiles...),
@@ -312,7 +291,7 @@ func New(client clientset.Interface,
 	// Additional tweaks to the config produced by the configurator.
 	sched.DisablePreemption = options.disablePreemption
 	sched.StopEverything = stopEverything
-	sched.podConditionUpdater = &podConditionUpdaterImpl{client}
+	sched.client = client
 	sched.podPreemptor = &podPreemptorImpl{client}
 	sched.scheduledPodsHasSynced = podInformer.Informer().HasSynced
 
@@ -366,21 +345,41 @@ func (sched *Scheduler) Run(ctx context.Context) {
 	sched.SchedulingQueue.Close()
 }
 
-// recordFailedSchedulingEvent records an event for the pod that indicates the
-// pod has failed to schedule.
-// NOTE: This function modifies "pod". "pod" should be copied before being passed.
-func (sched *Scheduler) recordSchedulingFailure(prof *profile.Profile, podInfo *framework.QueuedPodInfo, err error, reason string, message string) {
+// recordSchedulingFailure records an event for the pod that indicates the
+// pod has failed to schedule. Also, update the pod condition and nominated node name if set.
+func (sched *Scheduler) recordSchedulingFailure(prof *profile.Profile, podInfo *framework.QueuedPodInfo, err error, reason string, nominatedNode string) {
 	sched.Error(podInfo, err)
+
+	// Update the scheduling queue with the nominated pod information. Without
+	// this, there would be a race condition between the next scheduling cycle
+	// and the time the scheduler receives a Pod Update for the nominated pod.
+	// Here we check for nil only for tests.
+	if sched.SchedulingQueue != nil {
+		sched.SchedulingQueue.AddNominatedPod(podInfo.Pod, nominatedNode)
+	}
+
 	pod := podInfo.Pod
-	prof.Recorder.Eventf(pod, nil, v1.EventTypeWarning, "FailedScheduling", "Scheduling", message)
-	if err := sched.podConditionUpdater.update(pod, &v1.PodCondition{
+	prof.Recorder.Eventf(pod, nil, v1.EventTypeWarning, "FailedScheduling", "Scheduling", err.Error())
+	if err := updatePod(sched.client, pod, &v1.PodCondition{
 		Type:    v1.PodScheduled,
 		Status:  v1.ConditionFalse,
 		Reason:  reason,
 		Message: err.Error(),
-	}); err != nil {
-		klog.Errorf("Error updating the condition of the pod %s/%s: %v", pod.Namespace, pod.Name, err)
+	}, nominatedNode); err != nil {
+		klog.Errorf("Error updating pod %s/%s: %v", pod.Namespace, pod.Name, err)
 	}
+}
+
+func updatePod(client clientset.Interface, pod *v1.Pod, condition *v1.PodCondition, nominatedNode string) error {
+	klog.V(3).Infof("Updating pod condition for %s/%s to (%s==%s, Reason=%s)", pod.Namespace, pod.Name, condition.Type, condition.Status, condition.Reason)
+	podCopy := pod.DeepCopy()
+	// NominatedNodeName is updated only if we are trying to set it, and the value is
+	// different from the existing one.
+	if !podutil.UpdatePodCondition(&podCopy.Status, condition) && pod.Status.NominatedNodeName == nominatedNode {
+		return nil
+	}
+	podCopy.Status.NominatedNodeName = nominatedNode
+	return patchPod(client, pod, podCopy)
 }
 
 // preempt tries to create room for a pod that has failed to schedule, by preempting lower priority pods if possible.
@@ -399,19 +398,6 @@ func (sched *Scheduler) preempt(ctx context.Context, prof *profile.Profile, stat
 		return "", err
 	}
 	if len(nodeName) != 0 {
-		// Update the scheduling queue with the nominated pod information. Without
-		// this, there would be a race condition between the next scheduling cycle
-		// and the time the scheduler receives a Pod Update for the nominated pod.
-		sched.SchedulingQueue.AddNominatedPod(preemptor, nodeName)
-
-		// Make a call to update nominated node name of the pod on the API server.
-		err = sched.podPreemptor.setNominatedNodeName(preemptor, nodeName)
-		if err != nil {
-			klog.Errorf("Error in preemption process. Cannot set 'NominatedNodeName' on pod %v/%v: %v", preemptor.Namespace, preemptor.Name, err)
-			sched.SchedulingQueue.DeleteNominatedPodIfExists(preemptor)
-			return "", err
-		}
-
 		for _, victim := range victims {
 			if err := sched.podPreemptor.deletePod(victim); err != nil {
 				klog.Errorf("Error preempting pod %v/%v: %v", victim.Namespace, victim.Name, err)
@@ -549,16 +535,29 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 		// preempt, with the expectation that the next time the pod is tried for scheduling it
 		// will fit due to the preemption. It is also possible that a different pod will schedule
 		// into the resources that were preempted, but this is harmless.
+		nominatedNode := ""
 		if fitError, ok := err.(*core.FitError); ok {
 			if sched.DisablePreemption {
 				klog.V(3).Infof("Pod priority feature is not enabled or preemption is disabled by scheduler configuration." +
 					" No preemption is performed.")
 			} else {
 				preemptionStartTime := time.Now()
-				sched.preempt(schedulingCycleCtx, prof, state, pod, fitError)
+				// TODO(Huang-Wei): implement the preemption logic as a PostFilter plugin.
+				nominatedNode, _ = sched.preempt(schedulingCycleCtx, prof, state, pod, fitError)
 				metrics.PreemptionAttempts.Inc()
 				metrics.SchedulingAlgorithmPreemptionEvaluationDuration.Observe(metrics.SinceInSeconds(preemptionStartTime))
 				metrics.DeprecatedSchedulingDuration.WithLabelValues(metrics.PreemptionEvaluation).Observe(metrics.SinceInSeconds(preemptionStartTime))
+
+				// Run PostFilter plugins to try to make the pod schedulable in a future scheduling cycle.
+				result, status := prof.RunPostFilterPlugins(ctx, state, pod, fitError.FilteredNodesStatuses)
+				if status.Code() == framework.Error {
+					klog.Errorf("Status after running PostFilter plugins for pod %v/%v: %v", pod.Namespace, pod.Name, status)
+				} else {
+					klog.V(5).Infof("Status after running PostFilter plugins for pod %v/%v: %v", pod.Namespace, pod.Name, status)
+				}
+				if status.IsSuccess() && result != nil {
+					nominatedNode = result.NominatedNodeName
+				}
 			}
 			// Pod did not fit anywhere, so it is counted as a failure. If preemption
 			// succeeds, the pod should get counted as a success the next time we try to
@@ -571,7 +570,7 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 			klog.Errorf("error selecting node for pod: %v", err)
 			metrics.PodScheduleErrors.Inc()
 		}
-		sched.recordSchedulingFailure(prof, podInfo.DeepCopy(), err, v1.PodReasonUnschedulable, err.Error())
+		sched.recordSchedulingFailure(prof, podInfo, err, v1.PodReasonUnschedulable, nominatedNode)
 		return
 	}
 	metrics.SchedulingAlgorithmLatency.Observe(metrics.SinceInSeconds(start))
@@ -582,7 +581,7 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 
 	// Run "reserve" plugins.
 	if sts := prof.RunReservePlugins(schedulingCycleCtx, state, assumedPod, scheduleResult.SuggestedHost); !sts.IsSuccess() {
-		sched.recordSchedulingFailure(prof, assumedPodInfo, sts.AsError(), SchedulerError, sts.Message())
+		sched.recordSchedulingFailure(prof, assumedPodInfo, sts.AsError(), SchedulerError, "")
 		metrics.PodScheduleErrors.Inc()
 		return
 	}
@@ -595,7 +594,7 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 		// This relies on the fact that Error will check if the pod has been bound
 		// to a node and if so will not add it back to the unscheduled pods queue
 		// (otherwise this would cause an infinite loop).
-		sched.recordSchedulingFailure(prof, assumedPodInfo, err, SchedulerError, fmt.Sprintf("AssumePod failed: %v", err))
+		sched.recordSchedulingFailure(prof, assumedPodInfo, err, SchedulerError, "")
 		metrics.PodScheduleErrors.Inc()
 		// trigger un-reserve plugins to clean up state associated with the reserved Pod
 		prof.RunUnreservePlugins(schedulingCycleCtx, state, assumedPod, scheduleResult.SuggestedHost)
@@ -618,7 +617,7 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 		}
 		// One of the plugins returned status different than success or wait.
 		prof.RunUnreservePlugins(schedulingCycleCtx, state, assumedPod, scheduleResult.SuggestedHost)
-		sched.recordSchedulingFailure(prof, assumedPodInfo, runPermitStatus.AsError(), reason, runPermitStatus.Message())
+		sched.recordSchedulingFailure(prof, assumedPodInfo, runPermitStatus.AsError(), reason, "")
 		return
 	}
 
@@ -644,7 +643,7 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 			}
 			// trigger un-reserve plugins to clean up state associated with the reserved Pod
 			prof.RunUnreservePlugins(bindingCycleCtx, state, assumedPod, scheduleResult.SuggestedHost)
-			sched.recordSchedulingFailure(prof, assumedPodInfo, waitOnPermitStatus.AsError(), reason, waitOnPermitStatus.Message())
+			sched.recordSchedulingFailure(prof, assumedPodInfo, waitOnPermitStatus.AsError(), reason, "")
 			return
 		}
 
@@ -659,7 +658,7 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 			}
 			// trigger un-reserve plugins to clean up state associated with the reserved Pod
 			prof.RunUnreservePlugins(bindingCycleCtx, state, assumedPod, scheduleResult.SuggestedHost)
-			sched.recordSchedulingFailure(prof, assumedPodInfo, preBindStatus.AsError(), reason, preBindStatus.Message())
+			sched.recordSchedulingFailure(prof, assumedPodInfo, preBindStatus.AsError(), reason, "")
 			return
 		}
 
@@ -669,7 +668,7 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 			metrics.PodScheduleErrors.Inc()
 			// trigger un-reserve plugins to clean up state associated with the reserved Pod
 			prof.RunUnreservePlugins(bindingCycleCtx, state, assumedPod, scheduleResult.SuggestedHost)
-			sched.recordSchedulingFailure(prof, assumedPodInfo, err, SchedulerError, fmt.Sprintf("Binding rejected: %v", err))
+			sched.recordSchedulingFailure(prof, assumedPodInfo, fmt.Errorf("Binding rejected: %v", err), SchedulerError, "")
 		} else {
 			// Calculating nodeResourceString can be heavy. Avoid it if klog verbosity is below 2.
 			if klog.V(2).Enabled() {
@@ -713,31 +712,6 @@ func (sched *Scheduler) skipPodSchedule(prof *profile.Profile, pod *v1.Pod) bool
 	return false
 }
 
-type podConditionUpdaterImpl struct {
-	Client clientset.Interface
-}
-
-func (p *podConditionUpdaterImpl) update(pod *v1.Pod, condition *v1.PodCondition) error {
-	klog.V(3).Infof("Updating pod condition for %s/%s to (%s==%s, Reason=%s)", pod.Namespace, pod.Name, condition.Type, condition.Status, condition.Reason)
-	oldData, err := json.Marshal(pod)
-	if err != nil {
-		return err
-	}
-	if !podutil.UpdatePodCondition(&pod.Status, condition) {
-		return nil
-	}
-	newData, err := json.Marshal(pod)
-	if err != nil {
-		return err
-	}
-	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, &v1.Pod{})
-	if err != nil {
-		return fmt.Errorf("failed to create merge patch for pod %q/%q: %v", pod.Namespace, pod.Name, err)
-	}
-	_, err = p.Client.CoreV1().Pods(pod.Namespace).Patch(context.TODO(), pod.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{}, "status")
-	return err
-}
-
 type podPreemptorImpl struct {
 	Client clientset.Interface
 }
@@ -750,34 +724,31 @@ func (p *podPreemptorImpl) deletePod(pod *v1.Pod) error {
 	return p.Client.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
 }
 
-func (p *podPreemptorImpl) setNominatedNodeName(pod *v1.Pod, nominatedNodeName string) error {
-	klog.V(3).Infof("Setting nominated node name for %s/%s to \"%s\"", pod.Namespace, pod.Name, nominatedNodeName)
-	if pod.Status.NominatedNodeName == nominatedNodeName {
+func (p *podPreemptorImpl) removeNominatedNodeName(pod *v1.Pod) error {
+	if len(pod.Status.NominatedNodeName) == 0 {
 		return nil
 	}
 	podCopy := pod.DeepCopy()
-	oldData, err := json.Marshal(podCopy)
+	podCopy.Status.NominatedNodeName = ""
+	return patchPod(p.Client, pod, podCopy)
+}
+
+func patchPod(client clientset.Interface, old *v1.Pod, new *v1.Pod) error {
+	oldData, err := json.Marshal(old)
 	if err != nil {
 		return err
 	}
-	podCopy.Status.NominatedNodeName = nominatedNodeName
-	newData, err := json.Marshal(podCopy)
+
+	newData, err := json.Marshal(new)
 	if err != nil {
 		return err
 	}
 	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, &v1.Pod{})
 	if err != nil {
-		return fmt.Errorf("failed to create merge patch for pod %q/%q: %v", pod.Namespace, pod.Name, err)
+		return fmt.Errorf("failed to create merge patch for pod %q/%q: %v", old.Namespace, old.Name, err)
 	}
-	_, err = p.Client.CoreV1().Pods(pod.Namespace).Patch(context.TODO(), pod.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{}, "status")
+	_, err = client.CoreV1().Pods(old.Namespace).Patch(context.TODO(), old.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{}, "status")
 	return err
-}
-
-func (p *podPreemptorImpl) removeNominatedNodeName(pod *v1.Pod) error {
-	if len(pod.Status.NominatedNodeName) == 0 {
-		return nil
-	}
-	return p.setNominatedNodeName(pod, "")
 }
 
 func defaultAlgorithmSourceProviderName() *string {

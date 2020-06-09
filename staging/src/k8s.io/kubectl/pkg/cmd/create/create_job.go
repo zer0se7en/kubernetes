@@ -32,6 +32,7 @@ import (
 	batchv1client "k8s.io/client-go/kubernetes/typed/batch/v1"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scheme"
+	"k8s.io/kubectl/pkg/util"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
 )
@@ -69,6 +70,7 @@ type CreateJobOptions struct {
 	DryRunVerifier   *resource.DryRunVerifier
 	Builder          *resource.Builder
 	FieldManager     string
+	CreateAnnotation bool
 
 	genericclioptions.IOStreams
 }
@@ -85,10 +87,11 @@ func NewCreateJobOptions(ioStreams genericclioptions.IOStreams) *CreateJobOption
 func NewCmdCreateJob(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobra.Command {
 	o := NewCreateJobOptions(ioStreams)
 	cmd := &cobra.Command{
-		Use:     "job NAME --image=image [--from=cronjob/name] -- [COMMAND] [args...]",
-		Short:   jobLong,
-		Long:    jobLong,
-		Example: jobExample,
+		Use:                   "job NAME --image=image [--from=cronjob/name] -- [COMMAND] [args...]",
+		DisableFlagsInUseLine: true,
+		Short:                 jobLong,
+		Long:                  jobLong,
+		Example:               jobExample,
 		Run: func(cmd *cobra.Command, args []string) {
 			cmdutil.CheckErr(o.Complete(f, cmd, args))
 			cmdutil.CheckErr(o.Validate())
@@ -126,6 +129,8 @@ func (o *CreateJobOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args 
 	if err != nil {
 		return err
 	}
+
+	o.CreateAnnotation = cmdutil.GetFlagBool(cmd, cmdutil.ApplyAnnotationsFlag)
 
 	o.Namespace, o.EnforceNamespace, err = f.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
@@ -201,6 +206,11 @@ func (o *CreateJobOptions) Run() error {
 
 		job = o.createJobFromCronJob(cronJob)
 	}
+
+	if err := util.CreateOrUpdateAnnotation(o.CreateAnnotation, job, scheme.DefaultJSONEncoder()); err != nil {
+		return err
+	}
+
 	if o.DryRunStrategy != cmdutil.DryRunClient {
 		createOptions := metav1.CreateOptions{}
 		if o.FieldManager != "" {
