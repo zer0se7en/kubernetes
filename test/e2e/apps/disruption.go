@@ -396,9 +396,11 @@ func patchPDBOrDie(cs kubernetes.Interface, dc dynamic.Interface, ns string, nam
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		old := getPDBStatusOrDie(dc, ns, name)
 		patchBytes, err := f(old)
+		framework.ExpectNoError(err)
 		if updated, err = cs.PolicyV1beta1().PodDisruptionBudgets(ns).Patch(context.TODO(), old.Name, types.MergePatchType, patchBytes, metav1.PatchOptions{}, subresources...); err != nil {
 			return err
 		}
+		framework.ExpectNoError(err)
 		return nil
 	})
 
@@ -459,8 +461,8 @@ func createPodsOrDie(cs kubernetes.Interface, ns string, n int) {
 			Spec: v1.PodSpec{
 				Containers: []v1.Container{
 					{
-						Name:  "busybox",
-						Image: imageutils.GetE2EImage(imageutils.EchoServer),
+						Name:  "donothing",
+						Image: imageutils.GetPauseImageName(),
 					},
 				},
 				RestartPolicy: v1.RestartPolicyAlways,
@@ -504,8 +506,8 @@ func waitForPodsOrDie(cs kubernetes.Interface, ns string, n int) {
 
 func createReplicaSetOrDie(cs kubernetes.Interface, ns string, size int32, exclusive bool) {
 	container := v1.Container{
-		Name:  "busybox",
-		Image: imageutils.GetE2EImage(imageutils.EchoServer),
+		Name:  "donothing",
+		Image: imageutils.GetPauseImageName(),
 	}
 	if exclusive {
 		container.Ports = []v1.ContainerPort{
