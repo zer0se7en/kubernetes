@@ -531,7 +531,7 @@ func (c *RecommendedConfig) Complete() CompletedConfig {
 }
 
 // New creates a new server which logically combines the handling chain with the passed server.
-// name is used to differentiate for logging. The handler chain in particular can be difficult as it starts delgating.
+// name is used to differentiate for logging. The handler chain in particular can be difficult as it starts delegating.
 // delegationTarget may not be nil.
 func (c completedConfig) New(name string, delegationTarget DelegationTarget) (*GenericAPIServer, error) {
 	if c.Serializer == nil {
@@ -746,14 +746,7 @@ func DefaultBuildHandlerChain(apiHandler http.Handler, c *Config) http.Handler {
 	handler = filterlatency.TrackStarted(handler, "authentication")
 
 	handler = genericfilters.WithCORS(handler, c.CorsAllowedOriginList, nil, nil, nil, "true")
-
-	// WithTimeoutForNonLongRunningRequests will call the rest of the request handling in a go-routine with the
-	// context with deadline. The go-routine can keep running, while the timeout logic will return a timeout to the client.
-	handler = genericfilters.WithTimeoutForNonLongRunningRequests(handler, c.LongRunningFunc)
-
-	// WithRequestDeadline sets a deadline for the request context appropriately
-	handler = genericapifilters.WithRequestDeadline(handler, c.LongRunningFunc, c.RequestTimeout)
-
+	handler = genericfilters.WithTimeoutForNonLongRunningRequests(handler, c.LongRunningFunc, c.RequestTimeout)
 	handler = genericfilters.WithWaitGroup(handler, c.LongRunningFunc, c.HandlerChainWaitGroup)
 	handler = genericapifilters.WithRequestInfo(handler, c.RequestInfoResolver)
 	if c.SecureServing != nil && !c.SecureServing.DisableHTTP2 && c.GoawayChance > 0 {
