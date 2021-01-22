@@ -63,7 +63,7 @@ const (
 	// scheduler skip preemption.
 	// The accompanying status message should explain why the pod is unschedulable.
 	Unschedulable
-	// UnschedulableAndUnresolvable is used when a PreFilter plugin finds a pod unschedulable and
+	// UnschedulableAndUnresolvable is used when a plugin finds a pod unschedulable and
 	// preemption would not change anything. Plugins should return Unschedulable if it is possible
 	// that the pod can get scheduled with preemption.
 	// The accompanying status message should explain why the pod is unschedulable.
@@ -76,6 +76,15 @@ const (
 
 // This list should be exactly the same as the codes iota defined above in the same order.
 var codes = []string{"Success", "Error", "Unschedulable", "UnschedulableAndUnresolvable", "Wait", "Skip"}
+
+// statusPrecedence defines a map from status to its precedence, larger value means higher precedent.
+var statusPrecedence = map[Code]int{
+	Error:                        3,
+	UnschedulableAndUnresolvable: 2,
+	Unschedulable:                1,
+	// Any other statuses we know today, `Skip` or `Wait`, will take precedence over `Success`.
+	Success: -1,
+}
 
 func (c Code) String() string {
 	return codes[c]
@@ -184,28 +193,19 @@ func (p PluginToStatus) Merge() *Status {
 	}
 
 	finalStatus := NewStatus(Success)
-	var hasUnschedulableAndUnresolvable, hasUnschedulable bool
 	for _, s := range p {
 		if s.Code() == Error {
 			finalStatus.err = s.AsError()
-		} else if s.Code() == UnschedulableAndUnresolvable {
-			hasUnschedulableAndUnresolvable = true
-		} else if s.Code() == Unschedulable {
-			hasUnschedulable = true
 		}
-		finalStatus.code = s.Code()
+		if statusPrecedence[s.Code()] > statusPrecedence[finalStatus.code] {
+			finalStatus.code = s.Code()
+		}
+
 		for _, r := range s.reasons {
 			finalStatus.AppendReason(r)
 		}
 	}
 
-	if finalStatus.err != nil {
-		finalStatus.code = Error
-	} else if hasUnschedulableAndUnresolvable {
-		finalStatus.code = UnschedulableAndUnresolvable
-	} else if hasUnschedulable {
-		finalStatus.code = Unschedulable
-	}
 	return finalStatus
 }
 
@@ -246,10 +246,10 @@ type QueueSortPlugin interface {
 type PreFilterExtensions interface {
 	// AddPod is called by the framework while trying to evaluate the impact
 	// of adding podToAdd to the node while scheduling podToSchedule.
-	AddPod(ctx context.Context, state *CycleState, podToSchedule *v1.Pod, podToAdd *v1.Pod, nodeInfo *NodeInfo) *Status
+	AddPod(ctx context.Context, state *CycleState, podToSchedule *v1.Pod, podInfoToAdd *PodInfo, nodeInfo *NodeInfo) *Status
 	// RemovePod is called by the framework while trying to evaluate the impact
 	// of removing podToRemove from the node while scheduling podToSchedule.
-	RemovePod(ctx context.Context, state *CycleState, podToSchedule *v1.Pod, podToRemove *v1.Pod, nodeInfo *NodeInfo) *Status
+	RemovePod(ctx context.Context, state *CycleState, podToSchedule *v1.Pod, podInfoToRemove *PodInfo, nodeInfo *NodeInfo) *Status
 }
 
 // PreFilterPlugin is an interface that must be implemented by "PreFilter" plugins.
@@ -438,12 +438,12 @@ type Framework interface {
 	// RunPreFilterExtensionAddPod calls the AddPod interface for the set of configured
 	// PreFilter plugins. It returns directly if any of the plugins return any
 	// status other than Success.
-	RunPreFilterExtensionAddPod(ctx context.Context, state *CycleState, podToSchedule *v1.Pod, podToAdd *v1.Pod, nodeInfo *NodeInfo) *Status
+	RunPreFilterExtensionAddPod(ctx context.Context, state *CycleState, podToSchedule *v1.Pod, podInfoToAdd *PodInfo, nodeInfo *NodeInfo) *Status
 
 	// RunPreFilterExtensionRemovePod calls the RemovePod interface for the set of configured
 	// PreFilter plugins. It returns directly if any of the plugins return any
 	// status other than Success.
-	RunPreFilterExtensionRemovePod(ctx context.Context, state *CycleState, podToSchedule *v1.Pod, podToAdd *v1.Pod, nodeInfo *NodeInfo) *Status
+	RunPreFilterExtensionRemovePod(ctx context.Context, state *CycleState, podToSchedule *v1.Pod, podInfoToRemove *PodInfo, nodeInfo *NodeInfo) *Status
 
 	// RunPreScorePlugins runs the set of configured PreScore plugins. If any
 	// of these plugins returns any status other than "Success", the given pod is rejected.
@@ -539,6 +539,9 @@ type Handle interface {
 
 	SharedInformerFactory() informers.SharedInformerFactory
 
+	// RunFilterPluginsWithNominatedPods runs the set of configured filter plugins for nominated pod on the given node.
+	RunFilterPluginsWithNominatedPods(ctx context.Context, state *CycleState, pod *v1.Pod, info *NodeInfo) *Status
+
 	// TODO: unroll the wrapped interfaces to Handle.
 	PreemptHandle() PreemptHandle
 }
@@ -582,7 +585,7 @@ type PluginsRunner interface {
 	// RunFilterPlugins runs the set of configured filter plugins for pod on the given node.
 	RunFilterPlugins(context.Context, *CycleState, *v1.Pod, *NodeInfo) PluginToStatus
 	// RunPreFilterExtensionAddPod calls the AddPod interface for the set of configured PreFilter plugins.
-	RunPreFilterExtensionAddPod(ctx context.Context, state *CycleState, podToSchedule *v1.Pod, podToAdd *v1.Pod, nodeInfo *NodeInfo) *Status
+	RunPreFilterExtensionAddPod(ctx context.Context, state *CycleState, podToSchedule *v1.Pod, podInfoToAdd *PodInfo, nodeInfo *NodeInfo) *Status
 	// RunPreFilterExtensionRemovePod calls the RemovePod interface for the set of configured PreFilter plugins.
-	RunPreFilterExtensionRemovePod(ctx context.Context, state *CycleState, podToSchedule *v1.Pod, podToRemove *v1.Pod, nodeInfo *NodeInfo) *Status
+	RunPreFilterExtensionRemovePod(ctx context.Context, state *CycleState, podToSchedule *v1.Pod, podInfoToRemove *PodInfo, nodeInfo *NodeInfo) *Status
 }

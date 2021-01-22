@@ -18,6 +18,7 @@ package ipvs
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -189,7 +190,6 @@ var ipsetWithIptablesChain = []struct {
 }
 
 // In IPVS proxy mode, the following flags need to be set
-const sysctlRouteLocalnet = "net/ipv4/conf/all/route_localnet"
 const sysctlBridgeCallIPTables = "net/bridge/bridge-nf-call-iptables"
 const sysctlVSConnTrack = "net/ipv4/vs/conntrack"
 const sysctlConnReuse = "net/ipv4/vs/conn_reuse_mode"
@@ -360,11 +360,6 @@ func NewProxier(ipt utiliptables.Interface,
 	nodePortAddresses []string,
 	kernelHandler KernelHandler,
 ) (*Proxier, error) {
-	// Set the route_localnet sysctl we need for
-	if err := utilproxy.EnsureSysctl(sysctl, sysctlRouteLocalnet, 1); err != nil {
-		return nil, err
-	}
-
 	// Proxy needs br_netfilter and bridge-nf-call-iptables=1 when containers
 	// are connected to a Linux bridge (but not SDN bridges).  Until most
 	// plugins handle this, log when config is missing
@@ -803,13 +798,9 @@ func cleanupIptablesLeftovers(ipt utiliptables.Interface) (encounteredError bool
 }
 
 // CleanupLeftovers clean up all ipvs and iptables rules created by ipvs Proxier.
-func CleanupLeftovers(ipvs utilipvs.Interface, ipt utiliptables.Interface, ipset utilipset.Interface, cleanupIPVS bool) (encounteredError bool) {
-	if cleanupIPVS {
-		// Return immediately when ipvs interface is nil - Probably initialization failed in somewhere.
-		if ipvs == nil {
-			return true
-		}
-		encounteredError = false
+func CleanupLeftovers(ipvs utilipvs.Interface, ipt utiliptables.Interface, ipset utilipset.Interface) (encounteredError bool) {
+	// Clear all ipvs rules
+	if ipvs != nil {
 		err := ipvs.Flush()
 		if err != nil {
 			klog.Errorf("Error flushing IPVS rules: %v", err)
@@ -1059,7 +1050,7 @@ func (proxier *Proxier) syncProxyRules() {
 	// We assume that if this was called, we really want to sync them,
 	// even if nothing changed in the meantime. In other words, callers are
 	// responsible for detecting no-op changes and not calling this function.
-	serviceUpdateResult := proxy.UpdateServiceMap(proxier.serviceMap, proxier.serviceChanges)
+	serviceUpdateResult := proxier.serviceMap.Update(proxier.serviceChanges)
 	endpointUpdateResult := proxier.endpointsMap.Update(proxier.endpointsChanges)
 
 	staleServices := serviceUpdateResult.UDPStaleClusterIP
@@ -2011,9 +2002,12 @@ func (proxier *Proxier) syncService(svcName string, vs *utilipvs.VirtualServer, 
 
 func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNodeLocalEndpoints bool, vs *utilipvs.VirtualServer) error {
 	appliedVirtualServer, err := proxier.ipvs.GetVirtualServer(vs)
-	if err != nil || appliedVirtualServer == nil {
+	if err != nil {
 		klog.Errorf("Failed to get IPVS service, error: %v", err)
 		return err
+	}
+	if appliedVirtualServer == nil {
+		return errors.New("IPVS virtual service does not exist")
 	}
 
 	// curEndpoints represents IPVS destinations listed from current system.
@@ -2042,9 +2036,14 @@ func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNode
 	}
 
 	for _, epInfo := range endpoints {
+		if !epInfo.IsReady() {
+			continue
+		}
+
 		if onlyNodeLocalEndpoints && !epInfo.GetIsLocal() {
 			continue
 		}
+
 		newEndpoints.Insert(epInfo.String())
 	}
 

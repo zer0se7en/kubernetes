@@ -1210,8 +1210,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 	})
 
-	// TODO: Get rid of [DisabledForLargeClusters] tag when issue #56138 is fixed.
-	ginkgo.It("should be able to change the type and ports of a service [Slow] [DisabledForLargeClusters]", func() {
+	ginkgo.It("should be able to change the type and ports of a service [Slow]", func() {
 		// requires cloud load-balancer support
 		e2eskipper.SkipUnlessProviderIs("gce", "gke", "aws")
 
@@ -2152,10 +2151,6 @@ var _ = SIGDescribe("Services", func() {
 		// this feature currently supported only on GCE/GKE/AWS
 		e2eskipper.SkipUnlessProviderIs("gce", "gke", "aws")
 
-		loadBalancerLagTimeout := e2eservice.LoadBalancerLagTimeoutDefault
-		if framework.ProviderIs("aws") {
-			loadBalancerLagTimeout = e2eservice.LoadBalancerLagTimeoutAWS
-		}
 		loadBalancerCreateTimeout := e2eservice.GetServiceLoadBalancerCreationTimeout(cs)
 
 		namespace := f.Namespace.Name
@@ -2194,17 +2189,16 @@ var _ = SIGDescribe("Services", func() {
 		svc, err = jig.WaitForLoadBalancer(loadBalancerCreateTimeout)
 		framework.ExpectNoError(err)
 
-		// timeout when we haven't just created the load balancer
-		normalReachabilityTimeout := 2 * time.Minute
-
 		ginkgo.By("check reachability from different sources")
 		svcIP := e2eservice.GetIngressPoint(&svc.Status.LoadBalancer.Ingress[0])
-		// Wait longer as this is our first request after creation.  We can't check using a separate method,
-		// because the LB should only be reachable from the "accept" pod
-		checkReachabilityFromPod(true, loadBalancerLagTimeout, namespace, acceptPod.Name, svcIP)
-		checkReachabilityFromPod(false, normalReachabilityTimeout, namespace, dropPod.Name, svcIP)
+		// We should wait until service changes are actually propagated in the cloud-provider,
+		// as this may take significant amount of time, especially in large clusters.
+		// However, the information whether it was already programmed isn't achievable.
+		// So we're resolving it by using loadBalancerCreateTimeout that takes cluster size into account.
+		checkReachabilityFromPod(true, loadBalancerCreateTimeout, namespace, acceptPod.Name, svcIP)
+		checkReachabilityFromPod(false, loadBalancerCreateTimeout, namespace, dropPod.Name, svcIP)
 
-		// Make sure dropPod is running. There are certain chances that the pod might be teminated due to unexpected reasons.		dropPod, err = cs.CoreV1().Pods(namespace).Get(dropPod.Name, metav1.GetOptions{})
+		// Make sure dropPod is running. There are certain chances that the pod might be teminated due to unexpected reasons.
 		dropPod, err = cs.CoreV1().Pods(namespace).Get(context.TODO(), dropPod.Name, metav1.GetOptions{})
 		framework.ExpectNoError(err, "Unable to get pod %s", dropPod.Name)
 		framework.ExpectEqual(acceptPod.Status.Phase, v1.PodRunning)
@@ -2216,16 +2210,25 @@ var _ = SIGDescribe("Services", func() {
 			svc.Spec.LoadBalancerSourceRanges = []string{dropPod.Status.PodIP + "/32"}
 		})
 		framework.ExpectNoError(err)
-		checkReachabilityFromPod(false, normalReachabilityTimeout, namespace, acceptPod.Name, svcIP)
-		checkReachabilityFromPod(true, normalReachabilityTimeout, namespace, dropPod.Name, svcIP)
+
+		// We should wait until service changes are actually propagates, as this may take
+		// significant amount of time, especially in large clusters.
+		// However, the information whether it was already programmed isn't achievable.
+		// So we're resolving it by using loadBalancerCreateTimeout that takes cluster size into account.
+		checkReachabilityFromPod(false, loadBalancerCreateTimeout, namespace, acceptPod.Name, svcIP)
+		checkReachabilityFromPod(true, loadBalancerCreateTimeout, namespace, dropPod.Name, svcIP)
 
 		ginkgo.By("Delete LoadBalancerSourceRange field and check reachability")
 		_, err = jig.UpdateService(func(svc *v1.Service) {
 			svc.Spec.LoadBalancerSourceRanges = nil
 		})
 		framework.ExpectNoError(err)
-		checkReachabilityFromPod(true, normalReachabilityTimeout, namespace, acceptPod.Name, svcIP)
-		checkReachabilityFromPod(true, normalReachabilityTimeout, namespace, dropPod.Name, svcIP)
+		// We should wait until service changes are actually propagates, as this may take
+		// significant amount of time, especially in large clusters.
+		// However, the information whether it was already programmed isn't achievable.
+		// So we're resolving it by using loadBalancerCreateTimeout that takes cluster size into account.
+		checkReachabilityFromPod(true, loadBalancerCreateTimeout, namespace, acceptPod.Name, svcIP)
+		checkReachabilityFromPod(true, loadBalancerCreateTimeout, namespace, dropPod.Name, svcIP)
 	})
 
 	ginkgo.It("should be able to create an internal type load balancer [Slow]", func() {
@@ -3016,8 +3019,8 @@ var _ = SIGDescribe("ESIPP [Slow]", func() {
 		ingressIP := e2eservice.GetIngressPoint(&svc.Status.LoadBalancer.Ingress[0])
 
 		ginkgo.By("reading clientIP using the TCP service's service port via its external VIP")
-		content := GetHTTPContent(ingressIP, svcTCPPort, e2eservice.KubeProxyLagTimeout, "/clientip")
-		clientIP := content.String()
+		clientIP, err := GetHTTPContent(ingressIP, svcTCPPort, e2eservice.KubeProxyLagTimeout, "/clientip")
+		framework.ExpectNoError(err)
 		framework.Logf("ClientIP detected by target pod using VIP:SvcPort is %s", clientIP)
 
 		ginkgo.By("checking if Source IP is preserved")
@@ -3194,8 +3197,7 @@ var _ = SIGDescribe("ESIPP [Slow]", func() {
 		}
 	})
 
-	// TODO(#56138): Get rid of [DisabledForLargeClusters] tag when issue #56138 is fixed.
-	ginkgo.It("should handle updates to ExternalTrafficPolicy field [DisabledForLargeClusters]", func() {
+	ginkgo.It("should handle updates to ExternalTrafficPolicy field", func() {
 		namespace := f.Namespace.Name
 		serviceName := "external-local-update"
 		jig := e2eservice.NewTestJig(cs, namespace, serviceName)
@@ -3300,8 +3302,10 @@ var _ = SIGDescribe("ESIPP [Slow]", func() {
 		ginkgo.By(fmt.Sprintf("checking source ip is NOT preserved through loadbalancer %v", ingressIP))
 		var clientIP string
 		pollErr := wait.PollImmediate(framework.Poll, e2eservice.KubeProxyLagTimeout, func() (bool, error) {
-			content := GetHTTPContent(ingressIP, svcTCPPort, e2eservice.KubeProxyLagTimeout, "/clientip")
-			clientIP = content.String()
+			clientIP, err := GetHTTPContent(ingressIP, svcTCPPort, e2eservice.KubeProxyLagTimeout, "/clientip")
+			if err != nil {
+				return false, nil
+			}
 			if strings.HasPrefix(clientIP, "10.") {
 				return true, nil
 			}
@@ -3325,8 +3329,10 @@ var _ = SIGDescribe("ESIPP [Slow]", func() {
 		})
 		framework.ExpectNoError(err)
 		pollErr = wait.PollImmediate(framework.Poll, e2eservice.KubeProxyLagTimeout, func() (bool, error) {
-			content := GetHTTPContent(ingressIP, svcTCPPort, e2eservice.KubeProxyLagTimeout, path)
-			clientIP = content.String()
+			clientIP, err := GetHTTPContent(ingressIP, svcTCPPort, e2eservice.KubeProxyLagTimeout, path)
+			if err != nil {
+				return false, nil
+			}
 			ginkgo.By(fmt.Sprintf("Endpoint %v:%v%v returned client ip %v", ingressIP, svcTCPPort, path, clientIP))
 			if !strings.HasPrefix(clientIP, "10.") {
 				return true, nil
@@ -3844,6 +3850,7 @@ var _ = SIGDescribe("SCTP [Feature:SCTP] [LinuxOnly]", func() {
 		podName := "hostport"
 		ports := []v1.ContainerPort{{Protocol: v1.ProtocolSCTP, ContainerPort: 5060, HostPort: 5060}}
 		podSpec := e2epod.NewAgnhostPod(f.Namespace.Name, podName, nil, nil, ports)
+		podSpec.Spec.NodeName = node.Name
 
 		ginkgo.By(fmt.Sprintf("Launching the pod on node %v", node.Name))
 		f.PodClient().CreateSync(podSpec)
