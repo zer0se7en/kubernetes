@@ -144,7 +144,8 @@ const (
 	evictionMonitoringPeriod = time.Second * 10
 
 	// The path in containers' filesystems where the hosts file is mounted.
-	etcHostsPath = "/etc/hosts"
+	linuxEtcHostsPath   = "/etc/hosts"
+	windowsEtcHostsPath = "C:\\Windows\\System32\\drivers\\etc\\hosts"
 
 	// Capacity of the channel for receiving pod lifecycle events. This number
 	// is a bit arbitrary and may be adjusted in the future.
@@ -177,6 +178,15 @@ const (
 	nodeLeaseRenewIntervalFraction = 0.25
 )
 
+var etcHostsPath = getContainerEtcHostsPath()
+
+func getContainerEtcHostsPath() string {
+	if sysruntime.GOOS == "windows" {
+		return windowsEtcHostsPath
+	}
+	return linuxEtcHostsPath
+}
+
 // SyncHandler is an interface implemented by Kubelet, for testability
 type SyncHandler interface {
 	HandlePodAdditions(pods []*v1.Pod)
@@ -195,8 +205,8 @@ type Bootstrap interface {
 	GetConfiguration() kubeletconfiginternal.KubeletConfiguration
 	BirthCry()
 	StartGarbageCollection()
-	ListenAndServe(address net.IP, port uint, tlsOptions *server.TLSOptions, auth server.AuthInterface, enableCAdvisorJSONEndpoints, enableDebuggingHandlers, enableContentionProfiling, enableSystemLogHandler bool)
-	ListenAndServeReadOnly(address net.IP, port uint, enableCAdvisorJSONEndpoints bool)
+	ListenAndServe(kubeCfg *kubeletconfiginternal.KubeletConfiguration, tlsOptions *server.TLSOptions, auth server.AuthInterface)
+	ListenAndServeReadOnly(address net.IP, port uint)
 	ListenAndServePodResources()
 	Run(<-chan kubetypes.PodUpdate)
 	RunOnce(<-chan kubetypes.PodUpdate) ([]RunPodResult, error)
@@ -423,6 +433,8 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 
 	var serviceLister corelisters.ServiceLister
 	var serviceHasSynced cache.InformerSynced
+	// If kubeClient == nil, we are running in standalone mode (i.e. no API servers)
+	// If not nil, we are running as part of a cluster and should sync w/API
 	if kubeDeps.KubeClient != nil {
 		kubeInformers := informers.NewSharedInformerFactory(kubeDeps.KubeClient, 0)
 		serviceLister = kubeInformers.Core().V1().Services().Lister()
@@ -439,7 +451,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 
 	if kubeDeps.KubeClient != nil {
 		kubeInformers := informers.NewSharedInformerFactoryWithOptions(kubeDeps.KubeClient, 0, informers.WithTweakListOptions(func(options *metav1.ListOptions) {
-			options.FieldSelector = fields.Set{api.ObjectNameField: string(nodeName)}.String()
+			options.FieldSelector = fields.Set{metav1.ObjectNameField: string(nodeName)}.String()
 		}))
 		nodeLister = kubeInformers.Core().V1().Nodes().Lister()
 		nodeHasSynced = func() bool {
@@ -772,16 +784,14 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	klet.evictionManager = evictionManager
 	klet.admitHandlers.AddPodAdmitHandler(evictionAdmitHandler)
 
-	if utilfeature.DefaultFeatureGate.Enabled(features.Sysctls) {
-		// Safe, whitelisted sysctls can always be used as unsafe sysctls in the spec.
-		// Hence, we concatenate those two lists.
-		safeAndUnsafeSysctls := append(sysctlwhitelist.SafeSysctlWhitelist(), allowedUnsafeSysctls...)
-		sysctlsWhitelist, err := sysctl.NewWhitelist(safeAndUnsafeSysctls)
-		if err != nil {
-			return nil, err
-		}
-		klet.admitHandlers.AddPodAdmitHandler(sysctlsWhitelist)
+	// Safe, whitelisted sysctls can always be used as unsafe sysctls in the spec.
+	// Hence, we concatenate those two lists.
+	safeAndUnsafeSysctls := append(sysctlwhitelist.SafeSysctlWhitelist(), allowedUnsafeSysctls...)
+	sysctlsWhitelist, err := sysctl.NewWhitelist(safeAndUnsafeSysctls)
+	if err != nil {
+		return nil, err
 	}
+	klet.admitHandlers.AddPodAdmitHandler(sysctlsWhitelist)
 
 	// enable active deadline handler
 	activeDeadlineHandler, err := newActiveDeadlineHandler(klet.statusManager, kubeDeps.Recorder, klet.clock)
@@ -820,7 +830,11 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		v1.NamespaceNodeLease,
 		util.SetNodeOwnerFunc(klet.heartbeatClient, string(klet.nodeName)))
 
-	klet.shutdownManager = nodeshutdown.NewManager(klet.GetActivePods, killPodNow(klet.podWorkers, kubeDeps.Recorder), kubeCfg.ShutdownGracePeriod.Duration, kubeCfg.ShutdownGracePeriodCriticalPods.Duration)
+	// setup node shutdown manager
+	shutdownManager, shutdownAdmitHandler := nodeshutdown.NewManager(klet.GetActivePods, killPodNow(klet.podWorkers, kubeDeps.Recorder), klet.syncNodeStatus, kubeCfg.ShutdownGracePeriod.Duration, kubeCfg.ShutdownGracePeriodCriticalPods.Duration)
+
+	klet.shutdownManager = shutdownManager
+	klet.admitHandlers.AddPodAdmitHandler(shutdownAdmitHandler)
 
 	// Finally, put the most recent version of the config on the Kubelet, so
 	// people can see how it was configured.
@@ -1498,10 +1512,12 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 		return nil
 	}
 
-	// If the pod is a static pod and its mirror pod is still gracefully terminating,
-	// we do not want to start the new static pod until the old static pod is gracefully terminated.
+	// If a pod is still gracefully terminating, then we do not want to
+	// take further action. This mitigates static pods and deleted pods
+	// from getting rerun prematurely or their cgroups being deleted before
+	// the runtime cleans up.
 	podFullName := kubecontainer.GetPodFullName(pod)
-	if kl.podKiller.IsMirrorPodPendingTerminationByPodName(podFullName) {
+	if kl.podKiller.IsPodPendingTerminationByPodName(podFullName) {
 		return fmt.Errorf("pod %q is pending termination", podFullName)
 	}
 
@@ -1769,10 +1785,6 @@ func (kl *Kubelet) deletePod(pod *v1.Pod) error {
 		return fmt.Errorf("pod not found")
 	}
 	podPair := kubecontainer.PodPair{APIPod: pod, RunningPod: &runningPod}
-
-	if _, ok := kl.podManager.GetMirrorPodByPod(pod); ok {
-		kl.podKiller.MarkMirrorPodPendingTermination(pod)
-	}
 	kl.podKiller.KillPod(&podPair)
 
 	// We leave the volume/directory cleanup to the periodic cleanup routine.
@@ -2016,8 +2028,9 @@ func (kl *Kubelet) dispatchWork(pod *v1.Pod, syncType kubetypes.SyncPodType, mir
 	}
 
 	// optimization: avoid invoking the pod worker if no further changes are possible to the pod definition
-	if podWorkerTerminal {
-		klog.V(4).Infof("Pod %q has completed, ignoring remaining sync work: %s", format.Pod(pod), syncType)
+	// (i.e. the pod has completed and its containers have been terminated)
+	if podWorkerTerminal && containersTerminal {
+		klog.V(4).InfoS("Pod has completed and its containers have been terminated, ignoring remaining sync work", "pod", klog.KObj(pod), "syncType", syncType)
 		return
 	}
 
@@ -2221,13 +2234,14 @@ func (kl *Kubelet) ResyncInterval() time.Duration {
 }
 
 // ListenAndServe runs the kubelet HTTP server.
-func (kl *Kubelet) ListenAndServe(address net.IP, port uint, tlsOptions *server.TLSOptions, auth server.AuthInterface, enableCAdvisorJSONEndpoints, enableDebuggingHandlers, enableContentionProfiling, enableSystemLogHandler bool) {
-	server.ListenAndServeKubeletServer(kl, kl.resourceAnalyzer, address, port, tlsOptions, auth, enableCAdvisorJSONEndpoints, enableDebuggingHandlers, enableContentionProfiling, enableSystemLogHandler)
+func (kl *Kubelet) ListenAndServe(kubeCfg *kubeletconfiginternal.KubeletConfiguration, tlsOptions *server.TLSOptions,
+	auth server.AuthInterface) {
+	server.ListenAndServeKubeletServer(kl, kl.resourceAnalyzer, kubeCfg, tlsOptions, auth)
 }
 
 // ListenAndServeReadOnly runs the kubelet HTTP server in read-only mode.
-func (kl *Kubelet) ListenAndServeReadOnly(address net.IP, port uint, enableCAdvisorJSONEndpoints bool) {
-	server.ListenAndServeKubeletReadOnlyServer(kl, kl.resourceAnalyzer, address, port, enableCAdvisorJSONEndpoints)
+func (kl *Kubelet) ListenAndServeReadOnly(address net.IP, port uint) {
+	server.ListenAndServeKubeletReadOnlyServer(kl, kl.resourceAnalyzer, address, port)
 }
 
 // ListenAndServePodResources runs the kubelet podresources grpc service

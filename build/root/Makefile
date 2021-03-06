@@ -32,6 +32,9 @@ endif
 # It's necessary to set this because some environments don't link sh -> bash.
 SHELL := /usr/bin/env bash
 
+# Define variables so `make --warn-undefined-variables` works.
+PRINT_HELP ?=
+
 # We don't need make's built-in rules.
 MAKEFLAGS += --no-builtin-rules
 .SUFFIXES:
@@ -55,10 +58,6 @@ else
 $(error Both KUBE_GOFLAGS and GOFLAGS are set. Please use just GOFLAGS)
 endif
 endif
-
-# Extra options for the release or quick-release options:
-KUBE_RELEASE_RUN_TESTS := $(KUBE_RELEASE_RUN_TESTS)
-KUBE_FASTBUILD := $(KUBE_FASTBUILD)
 
 # This controls the verbosity of the build.  Higher numbers mean more output.
 KUBE_VERBOSE ?= 1
@@ -222,6 +221,8 @@ define TEST_E2E_NODE_HELP_INFO
 #    Defaults to "/tmp/_artifacts/$$(date +%y%m%dT%H%M%S)".
 #  LIST_IMAGES: For REMOTE=true only. If true, don't run tests. Just output the
 #    list of available images for testing.  Defaults to false.
+#  TIMEOUT: For REMOTE=true only. How long (in golang duration format) to wait
+#    for ginkgo tests to complete. Defaults to 45m.
 #  PARALLELISM: The number of ginkgo nodes to run.  Defaults to 8.
 #  RUNTIME: Container runtime to use (eg. docker, remote).
 #    Defaults to "docker".
@@ -364,7 +365,7 @@ clean_generated:
 	@echo "$$CLEAN_GENERATED_HELP_INFO"
 else
 clean_generated:
-	find . -type f -name $(GENERATED_FILE_PREFIX)\* | grep -v "[.]/staging/.*" | xargs rm -f
+	find . -type f -name '$(GENERATED_FILE_PREFIX)*'  | xargs rm -f
 endif
 
 define VET_HELP_INFO
@@ -403,6 +404,7 @@ ifeq ($(PRINT_HELP),y)
 release release-in-a-container:
 	@echo "$$RELEASE_HELP_INFO"
 else
+release release-in-a-container: KUBE_BUILD_CONFORMANCE = y
 release:
 	build/release.sh
 release-in-a-container:
@@ -420,6 +422,7 @@ define RELEASE_IMAGES_HELP_INFO
 endef
 .PHONY: release-images
 ifeq ($(PRINT_HELP),y)
+release-images: KUBE_BUILD_CONFORMANCE = y
 release-images:
 	@echo "$$RELEASE_IMAGES_HELP_INFO"
 else
@@ -456,7 +459,7 @@ define QUICK_RELEASE_IMAGES_HELP_INFO
 #
 # Args:
 #   KUBE_FASTBUILD: Whether to cross-compile for other architectures. Set to 'false' to do so.
-#   KUBE_BUILD_CONFORMANCE: Whether to build conformance testing image as well. Set to 'n' to skip.
+#   KUBE_BUILD_CONFORMANCE: Whether to build conformance testing image as well. Set to 'y' to do so.
 #
 # Example:
 #   make quick-release-images

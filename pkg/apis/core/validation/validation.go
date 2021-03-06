@@ -45,6 +45,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	schedulinghelper "k8s.io/component-helpers/scheduling/corev1"
 	apiservice "k8s.io/kubernetes/pkg/api/service"
 	"k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/apis/core/helper"
@@ -121,6 +122,15 @@ func ValidateDNS1123Label(value string, fldPath *field.Path) field.ErrorList {
 	return allErrs
 }
 
+// ValidateQualifiedName validates if name is what Kubernetes calls a "qualified name".
+func ValidateQualifiedName(value string, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	for _, msg := range validation.IsQualifiedName(value) {
+		allErrs = append(allErrs, field.Invalid(fldPath, value, msg))
+	}
+	return allErrs
+}
+
 // ValidateDNS1123Subdomain validates that a name is a proper DNS subdomain.
 func ValidateDNS1123Subdomain(value string, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
@@ -130,7 +140,7 @@ func ValidateDNS1123Subdomain(value string, fldPath *field.Path) field.ErrorList
 	return allErrs
 }
 
-func ValidatePodSpecificAnnotations(annotations map[string]string, spec *core.PodSpec, fldPath *field.Path) field.ErrorList {
+func ValidatePodSpecificAnnotations(annotations map[string]string, spec *core.PodSpec, fldPath *field.Path, opts PodValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	if value, isMirror := annotations[core.MirrorPodAnnotationKey]; isMirror {
@@ -141,6 +151,12 @@ func ValidatePodSpecificAnnotations(annotations map[string]string, spec *core.Po
 
 	if annotations[core.TolerationsAnnotationKey] != "" {
 		allErrs = append(allErrs, ValidateTolerationsInPodAnnotations(annotations, fldPath)...)
+	}
+
+	if !opts.AllowInvalidPodDeletionCost {
+		if _, err := helper.GetDeletionCostFromPodAnnotations(annotations); err != nil {
+			allErrs = append(allErrs, field.Invalid(fldPath.Key(core.PodDeletionCost), annotations[core.PodDeletionCost], "must be a 32bit integer"))
+		}
 	}
 
 	allErrs = append(allErrs, ValidateSeccompPodAnnotations(annotations, fldPath)...)
@@ -166,7 +182,7 @@ func ValidateTolerationsInPodAnnotations(annotations map[string]string, fldPath 
 	return allErrs
 }
 
-func ValidatePodSpecificAnnotationUpdates(newPod, oldPod *core.Pod, fldPath *field.Path) field.ErrorList {
+func ValidatePodSpecificAnnotationUpdates(newPod, oldPod *core.Pod, fldPath *field.Path, opts PodValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 	newAnnotations := newPod.Annotations
 	oldAnnotations := oldPod.Annotations
@@ -193,7 +209,7 @@ func ValidatePodSpecificAnnotationUpdates(newPod, oldPod *core.Pod, fldPath *fie
 			allErrs = append(allErrs, field.Forbidden(fldPath.Key(k), "may not add mirror pod annotation"))
 		}
 	}
-	allErrs = append(allErrs, ValidatePodSpecificAnnotations(newAnnotations, &newPod.Spec, fldPath)...)
+	allErrs = append(allErrs, ValidatePodSpecificAnnotations(newAnnotations, &newPod.Spec, fldPath, opts)...)
 	return allErrs
 }
 
@@ -3184,6 +3200,8 @@ type PodValidationOptions struct {
 	AllowMultipleHugePageResources bool
 	// Allow pod spec to use hugepages in downward API
 	AllowDownwardAPIHugePages bool
+	// Allow invalid pod-deletion-cost annotation value for backward compatibility.
+	AllowInvalidPodDeletionCost bool
 }
 
 // ValidatePodSingleHugePageResources checks if there are multiple huge
@@ -3208,7 +3226,7 @@ func ValidatePodSingleHugePageResources(pod *core.Pod, specPath *field.Path) fie
 func validatePodMetadataAndSpec(pod *core.Pod, opts PodValidationOptions) field.ErrorList {
 	fldPath := field.NewPath("metadata")
 	allErrs := ValidateObjectMeta(&pod.ObjectMeta, true, ValidatePodName, fldPath)
-	allErrs = append(allErrs, ValidatePodSpecificAnnotations(pod.ObjectMeta.Annotations, &pod.Spec, fldPath.Child("annotations"))...)
+	allErrs = append(allErrs, ValidatePodSpecificAnnotations(pod.ObjectMeta.Annotations, &pod.Spec, fldPath.Child("annotations"), opts)...)
 	allErrs = append(allErrs, ValidatePodSpec(&pod.Spec, &pod.ObjectMeta, field.NewPath("spec"), opts)...)
 
 	// we do additional validation only pertinent for pods and not pod templates
@@ -3390,7 +3408,7 @@ func ValidateNodeSelectorRequirement(rq core.NodeSelectorRequirement, fldPath *f
 }
 
 var nodeFieldSelectorValidators = map[string]func(string, bool) []string{
-	core.ObjectNameField: ValidateNodeName,
+	metav1.ObjectNameField: ValidateNodeName,
 }
 
 // ValidateNodeFieldSelectorRequirement tests that the specified NodeSelectorRequirement fields has valid data
@@ -3501,7 +3519,7 @@ func ValidateTopologySelectorTerm(term core.TopologySelectorTerm, fldPath *field
 func ValidateAvoidPodsInNodeAnnotations(annotations map[string]string, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	v1Avoids, err := v1helper.GetAvoidPodsFromNodeAnnotations(annotations)
+	v1Avoids, err := schedulinghelper.GetAvoidPodsFromNodeAnnotations(annotations)
 	if err != nil {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("AvoidPods"), core.PreferAvoidPodsAnnotationKey, err.Error()))
 		return allErrs
@@ -3555,7 +3573,9 @@ func ValidatePreferredSchedulingTerms(terms []core.PreferredSchedulingTerm, fldP
 func validatePodAffinityTerm(podAffinityTerm core.PodAffinityTerm, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	allErrs = append(allErrs, unversionedvalidation.ValidateLabelSelector(podAffinityTerm.LabelSelector, fldPath.Child("matchExpressions"))...)
+	allErrs = append(allErrs, unversionedvalidation.ValidateLabelSelector(podAffinityTerm.LabelSelector, fldPath.Child("labelSelector"))...)
+	allErrs = append(allErrs, unversionedvalidation.ValidateLabelSelector(podAffinityTerm.NamespaceSelector, fldPath.Child("namespaceSelector"))...)
+
 	for _, name := range podAffinityTerm.Namespaces {
 		for _, msg := range ValidateNamespaceName(name, false) {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("namespace"), name, msg))
@@ -3927,7 +3947,7 @@ func ValidatePodUpdate(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 	fldPath := field.NewPath("metadata")
 	allErrs := ValidateObjectMetaUpdate(&newPod.ObjectMeta, &oldPod.ObjectMeta, fldPath)
 	allErrs = append(allErrs, validatePodMetadataAndSpec(newPod, opts)...)
-	allErrs = append(allErrs, ValidatePodSpecificAnnotationUpdates(newPod, oldPod, fldPath.Child("annotations"))...)
+	allErrs = append(allErrs, ValidatePodSpecificAnnotationUpdates(newPod, oldPod, fldPath.Child("annotations"), opts)...)
 	specPath := field.NewPath("spec")
 
 	if !opts.AllowMultipleHugePageResources {
@@ -4034,10 +4054,10 @@ func ValidateContainerStateTransition(newStatuses, oldStatuses []core.ContainerS
 
 // ValidatePodStatusUpdate tests to see if the update is legal for an end user to make. newPod is updated with fields
 // that cannot be changed.
-func ValidatePodStatusUpdate(newPod, oldPod *core.Pod) field.ErrorList {
+func ValidatePodStatusUpdate(newPod, oldPod *core.Pod, opts PodValidationOptions) field.ErrorList {
 	fldPath := field.NewPath("metadata")
 	allErrs := ValidateObjectMetaUpdate(&newPod.ObjectMeta, &oldPod.ObjectMeta, fldPath)
-	allErrs = append(allErrs, ValidatePodSpecificAnnotationUpdates(newPod, oldPod, fldPath.Child("annotations"))...)
+	allErrs = append(allErrs, ValidatePodSpecificAnnotationUpdates(newPod, oldPod, fldPath.Child("annotations"), opts)...)
 	allErrs = append(allErrs, validatePodConditions(newPod.Status.Conditions, fldPath.Child("conditions"))...)
 
 	fldPath = field.NewPath("status")
@@ -4351,6 +4371,9 @@ func ValidateService(service *core.Service) field.ErrorList {
 		}
 	}
 
+	// validate LoadBalancerClass field
+	allErrs = append(allErrs, validateLoadBalancerClassField(nil, service)...)
+
 	// external traffic fields
 	allErrs = append(allErrs, validateServiceExternalTrafficFieldsValue(service)...)
 	return allErrs
@@ -4464,6 +4487,9 @@ func ValidateServiceUpdate(service, oldService *core.Service) field.ErrorList {
 	upgradeDowngradeIPFamiliesErrs := validateUpgradeDowngradeIPFamilies(oldService, service)
 	allErrs = append(allErrs, upgradeDowngradeIPFamiliesErrs...)
 
+	upgradeDowngradeLoadBalancerClassErrs := validateLoadBalancerClassField(oldService, service)
+	allErrs = append(allErrs, upgradeDowngradeLoadBalancerClassErrs...)
+
 	return append(allErrs, ValidateService(service)...)
 }
 
@@ -4572,7 +4598,7 @@ func ValidatePodTemplateSpec(spec *core.PodTemplateSpec, fldPath *field.Path, op
 	allErrs := field.ErrorList{}
 	allErrs = append(allErrs, unversionedvalidation.ValidateLabels(spec.Labels, fldPath.Child("labels"))...)
 	allErrs = append(allErrs, ValidateAnnotations(spec.Annotations, fldPath.Child("annotations"))...)
-	allErrs = append(allErrs, ValidatePodSpecificAnnotations(spec.Annotations, &spec.Spec, fldPath.Child("annotations"))...)
+	allErrs = append(allErrs, ValidatePodSpecificAnnotations(spec.Annotations, &spec.Spec, fldPath.Child("annotations"), opts)...)
 	allErrs = append(allErrs, ValidatePodSpec(&spec.Spec, nil, fldPath.Child("spec"), opts)...)
 	allErrs = append(allErrs, validateSeccompAnnotationsAndFields(spec.ObjectMeta, &spec.Spec, fldPath.Child("spec"))...)
 
@@ -5371,7 +5397,7 @@ func ValidateResourceRequirements(requirements *core.ResourceRequirements, fldPa
 }
 
 // validateResourceQuotaScopes ensures that each enumerated hard resource constraint is valid for set of scopes
-func validateResourceQuotaScopes(resourceQuotaSpec *core.ResourceQuotaSpec, fld *field.Path) field.ErrorList {
+func validateResourceQuotaScopes(resourceQuotaSpec *core.ResourceQuotaSpec, opts ResourceQuotaValidationOptions, fld *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if len(resourceQuotaSpec.Scopes) == 0 {
 		return allErrs
@@ -5383,7 +5409,7 @@ func validateResourceQuotaScopes(resourceQuotaSpec *core.ResourceQuotaSpec, fld 
 	fldPath := fld.Child("scopes")
 	scopeSet := sets.NewString()
 	for _, scope := range resourceQuotaSpec.Scopes {
-		if !helper.IsStandardResourceQuotaScope(string(scope)) {
+		if !helper.IsStandardResourceQuotaScope(string(scope), opts.AllowPodAffinityNamespaceSelector) {
 			allErrs = append(allErrs, field.Invalid(fldPath, resourceQuotaSpec.Scopes, "unsupported scope"))
 		}
 		for _, k := range hardLimits.List() {
@@ -5406,7 +5432,7 @@ func validateResourceQuotaScopes(resourceQuotaSpec *core.ResourceQuotaSpec, fld 
 }
 
 // validateScopedResourceSelectorRequirement tests that the match expressions has valid data
-func validateScopedResourceSelectorRequirement(resourceQuotaSpec *core.ResourceQuotaSpec, fld *field.Path) field.ErrorList {
+func validateScopedResourceSelectorRequirement(resourceQuotaSpec *core.ResourceQuotaSpec, opts ResourceQuotaValidationOptions, fld *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 	hardLimits := sets.NewString()
 	for k := range resourceQuotaSpec.Hard {
@@ -5415,7 +5441,7 @@ func validateScopedResourceSelectorRequirement(resourceQuotaSpec *core.ResourceQ
 	fldPath := fld.Child("matchExpressions")
 	scopeSet := sets.NewString()
 	for _, req := range resourceQuotaSpec.ScopeSelector.MatchExpressions {
-		if !helper.IsStandardResourceQuotaScope(string(req.ScopeName)) {
+		if !helper.IsStandardResourceQuotaScope(string(req.ScopeName), opts.AllowPodAffinityNamespaceSelector) {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("scopeName"), req.ScopeName, "unsupported scope"))
 		}
 		for _, k := range hardLimits.List() {
@@ -5424,10 +5450,10 @@ func validateScopedResourceSelectorRequirement(resourceQuotaSpec *core.ResourceQ
 			}
 		}
 		switch req.ScopeName {
-		case core.ResourceQuotaScopeBestEffort, core.ResourceQuotaScopeNotBestEffort, core.ResourceQuotaScopeTerminating, core.ResourceQuotaScopeNotTerminating:
+		case core.ResourceQuotaScopeBestEffort, core.ResourceQuotaScopeNotBestEffort, core.ResourceQuotaScopeTerminating, core.ResourceQuotaScopeNotTerminating, core.ResourceQuotaScopeCrossNamespacePodAffinity:
 			if req.Operator != core.ScopeSelectorOpExists {
 				allErrs = append(allErrs, field.Invalid(fldPath.Child("operator"), req.Operator,
-					"must be 'Exist' only operator when scope is any of ResourceQuotaScopeTerminating, ResourceQuotaScopeNotTerminating, ResourceQuotaScopeBestEffort and ResourceQuotaScopeNotBestEffort"))
+					"must be 'Exist' when scope is any of ResourceQuotaScopeTerminating, ResourceQuotaScopeNotTerminating, ResourceQuotaScopeBestEffort, ResourceQuotaScopeNotBestEffort or ResourceQuotaScopeCrossNamespacePodAffinity"))
 			}
 		}
 
@@ -5461,20 +5487,26 @@ func validateScopedResourceSelectorRequirement(resourceQuotaSpec *core.ResourceQ
 }
 
 // validateScopeSelector tests that the specified scope selector has valid data
-func validateScopeSelector(resourceQuotaSpec *core.ResourceQuotaSpec, fld *field.Path) field.ErrorList {
+func validateScopeSelector(resourceQuotaSpec *core.ResourceQuotaSpec, opts ResourceQuotaValidationOptions, fld *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if resourceQuotaSpec.ScopeSelector == nil {
 		return allErrs
 	}
-	allErrs = append(allErrs, validateScopedResourceSelectorRequirement(resourceQuotaSpec, fld.Child("scopeSelector"))...)
+	allErrs = append(allErrs, validateScopedResourceSelectorRequirement(resourceQuotaSpec, opts, fld.Child("scopeSelector"))...)
 	return allErrs
 }
 
+// ResourceQuotaValidationOptions contains the different settings for ResourceQuota validation
+type ResourceQuotaValidationOptions struct {
+	// Allow pod-affinity namespace selector validation.
+	AllowPodAffinityNamespaceSelector bool
+}
+
 // ValidateResourceQuota tests if required fields in the ResourceQuota are set.
-func ValidateResourceQuota(resourceQuota *core.ResourceQuota) field.ErrorList {
+func ValidateResourceQuota(resourceQuota *core.ResourceQuota, opts ResourceQuotaValidationOptions) field.ErrorList {
 	allErrs := ValidateObjectMeta(&resourceQuota.ObjectMeta, true, ValidateResourceQuotaName, field.NewPath("metadata"))
 
-	allErrs = append(allErrs, ValidateResourceQuotaSpec(&resourceQuota.Spec, field.NewPath("spec"))...)
+	allErrs = append(allErrs, ValidateResourceQuotaSpec(&resourceQuota.Spec, opts, field.NewPath("spec"))...)
 	allErrs = append(allErrs, ValidateResourceQuotaStatus(&resourceQuota.Status, field.NewPath("status"))...)
 
 	return allErrs
@@ -5499,7 +5531,7 @@ func ValidateResourceQuotaStatus(status *core.ResourceQuotaStatus, fld *field.Pa
 	return allErrs
 }
 
-func ValidateResourceQuotaSpec(resourceQuotaSpec *core.ResourceQuotaSpec, fld *field.Path) field.ErrorList {
+func ValidateResourceQuotaSpec(resourceQuotaSpec *core.ResourceQuotaSpec, opts ResourceQuotaValidationOptions, fld *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	fldPath := fld.Child("hard")
@@ -5508,8 +5540,9 @@ func ValidateResourceQuotaSpec(resourceQuotaSpec *core.ResourceQuotaSpec, fld *f
 		allErrs = append(allErrs, ValidateResourceQuotaResourceName(string(k), resPath)...)
 		allErrs = append(allErrs, ValidateResourceQuantityValue(string(k), v, resPath)...)
 	}
-	allErrs = append(allErrs, validateResourceQuotaScopes(resourceQuotaSpec, fld)...)
-	allErrs = append(allErrs, validateScopeSelector(resourceQuotaSpec, fld)...)
+
+	allErrs = append(allErrs, validateResourceQuotaScopes(resourceQuotaSpec, opts, fld)...)
+	allErrs = append(allErrs, validateScopeSelector(resourceQuotaSpec, opts, fld)...)
 
 	return allErrs
 }
@@ -5528,9 +5561,9 @@ func ValidateResourceQuantityValue(resource string, value resource.Quantity, fld
 
 // ValidateResourceQuotaUpdate tests to see if the update is legal for an end user to make.
 // newResourceQuota is updated with fields that cannot be changed.
-func ValidateResourceQuotaUpdate(newResourceQuota, oldResourceQuota *core.ResourceQuota) field.ErrorList {
+func ValidateResourceQuotaUpdate(newResourceQuota, oldResourceQuota *core.ResourceQuota, opts ResourceQuotaValidationOptions) field.ErrorList {
 	allErrs := ValidateObjectMetaUpdate(&newResourceQuota.ObjectMeta, &oldResourceQuota.ObjectMeta, field.NewPath("metadata"))
-	allErrs = append(allErrs, ValidateResourceQuotaSpec(&newResourceQuota.Spec, field.NewPath("spec"))...)
+	allErrs = append(allErrs, ValidateResourceQuotaSpec(&newResourceQuota.Spec, opts, field.NewPath("spec"))...)
 
 	// ensure scopes cannot change, and that resources are still valid for scope
 	fldPath := field.NewPath("spec", "scopes")
@@ -6327,4 +6360,48 @@ func isHeadlessService(service *core.Service) bool {
 	return service != nil &&
 		len(service.Spec.ClusterIPs) == 1 &&
 		service.Spec.ClusterIPs[0] == core.ClusterIPNone
+}
+
+// validateLoadBalancerClassField validation for loadBalancerClass
+func validateLoadBalancerClassField(oldService, service *core.Service) field.ErrorList {
+	allErrs := make(field.ErrorList, 0)
+	if oldService != nil {
+		// validate update op
+		if isTypeLoadBalancer(oldService) && isTypeLoadBalancer(service) {
+			// old and new are both LoadBalancer
+			if !sameLoadBalancerClass(oldService, service) {
+				// can't change loadBalancerClass
+				allErrs = append(allErrs, field.Invalid(field.NewPath("spec", "loadBalancerClass"), service.Spec.LoadBalancerClass, "may not change once set"))
+			}
+		}
+	}
+
+	if isTypeLoadBalancer(service) {
+		// check LoadBalancerClass format
+		if service.Spec.LoadBalancerClass != nil {
+			allErrs = append(allErrs, ValidateQualifiedName(*service.Spec.LoadBalancerClass, field.NewPath("spec", "loadBalancerClass"))...)
+		}
+	} else {
+		// check if LoadBalancerClass set for non LoadBalancer type of service
+		if service.Spec.LoadBalancerClass != nil {
+			allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "loadBalancerClass"), "may only be used when `type` is 'LoadBalancer'"))
+		}
+	}
+	return allErrs
+}
+
+// isTypeLoadBalancer tests service type is loadBalancer or not
+func isTypeLoadBalancer(service *core.Service) bool {
+	return service.Spec.Type == core.ServiceTypeLoadBalancer
+}
+
+// sameLoadBalancerClass check two services have the same loadBalancerClass or not
+func sameLoadBalancerClass(oldService, service *core.Service) bool {
+	if oldService.Spec.LoadBalancerClass == nil && service.Spec.LoadBalancerClass == nil {
+		return true
+	}
+	if oldService.Spec.LoadBalancerClass == nil || service.Spec.LoadBalancerClass == nil {
+		return false
+	}
+	return *oldService.Spec.LoadBalancerClass == *service.Spec.LoadBalancerClass
 }

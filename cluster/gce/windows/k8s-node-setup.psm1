@@ -161,6 +161,20 @@ function Dump-DebugInfoToConsole {
   } Catch { }
 }
 
+# Configures Window Defender preferences
+function Configure-WindowsDefender {
+  if ((Get-WindowsFeature -Name 'Windows-Defender').Installed) {
+    Log-Output "Configuring Windows Defender preferences"
+    Set-MpPreference -SubmitSamplesConsent NeverSend
+    Log-Output "Disabling Windows Defender sample submission"
+    Set-MpPreference -MAPSReporting Disabled
+    Log-Output "Disabling Windows Defender Microsoft Active Protection Service Reporting"
+
+    Log-Output "Defender Preferences"
+    Get-MpPreference
+  }
+}
+
 # Converts the kube-env string in Yaml
 #
 # Returns: a PowerShell Hashtable object containing the key-value pairs from
@@ -303,10 +317,13 @@ function Set-PrerequisiteOptions {
   Log-Output "Disabling Windows Update service"
   & sc.exe config wuauserv start=disabled
   & sc.exe stop wuauserv
+  Write-VerboseServiceInfoToConsole -Service 'wuauserv' -Delay 1
 
   # Use TLS 1.2: needed for Invoke-WebRequest downloads from github.com.
   [Net.ServicePointManager]::SecurityProtocol = `
       [Net.SecurityProtocolType]::Tls12
+
+  Configure-WindowsDefender
 }
 
 # Creates directories where other functions in this module will read and write
@@ -427,6 +444,7 @@ function Start-CSIProxy {
     & sc.exe failure csiproxy reset= 0 actions= restart/10000
     Log-Output "Starting CSI Proxy Service"
     & sc.exe start csiproxy
+    Write-VerboseServiceInfoToConsole -Service 'csiproxy' -Delay 1
   }
 }
 
@@ -1216,6 +1234,7 @@ function Start-WorkerServices {
 
   Log-Output "Waiting 10 seconds for kubelet to stabilize"
   Start-Sleep 10
+  Write-VerboseServiceInfoToConsole -Service 'kubelet'
 
   if (Get-Process | Where-Object Name -eq "kube-proxy") {
     Log-Output -Fatal `
@@ -1226,6 +1245,7 @@ function Start-WorkerServices {
   & sc.exe failure kube-proxy reset= 0 actions= restart/10000
   Log-Output "Starting kube-proxy service"
   & sc.exe start kube-proxy
+  Write-VerboseServiceInfoToConsole -Service 'kube-proxy' -Delay 1
 
   # F1020 23:08:52.000083    9136 server.go:361] unable to load in-cluster
   # configuration, KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT must be
@@ -1319,6 +1339,46 @@ function Setup-ContainerRuntime {
     Create_DockerRegistryKey
     Configure_Dockerd
   }
+}
+
+function Test-ContainersFeatureInstalled {
+  return (Get-WindowsFeature Containers).Installed
+}
+
+# After this function returns, the computer must be restarted to complete
+# the installation!
+function Install-ContainersFeature {
+  Log-Output "Installing Windows 'Containers' feature"
+  Install-WindowsFeature Containers
+}
+
+function Test-DockerIsInstalled {
+  return ((Get-Package `
+               -ProviderName DockerMsftProvider `
+               -ErrorAction SilentlyContinue |
+           Where-Object Name -eq 'docker') -ne $null)
+}
+
+function Test-DockerIsRunning {
+  return ((Get-Service docker).Status -eq 'Running')
+}
+
+# Installs Docker EE via the DockerMsftProvider. Ensure that the Windows
+# Containers feature is installed before calling this function; otherwise,
+# a restart may be needed after this function returns.
+function Install-Docker {
+  Log-Output 'Installing NuGet module'
+  Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
+
+  Log-Output 'Installing DockerMsftProvider module'
+  Install-Module -Name DockerMsftProvider -Repository PSGallery -Force
+
+  Log-Output "Installing latest Docker EE version"
+  Install-Package `
+      -Name docker `
+      -ProviderName DockerMsftProvider `
+      -Force `
+      -Verbose
 }
 
 # Add a registry key for docker in EventLog so that log messages are mapped
@@ -1698,15 +1758,15 @@ function DownloadAndInstall-LoggingAgents {
 function Create-LoggingAgentServices {
   cd $LOGGINGAGENT_ROOT
 
-  Log-Output 'Creating service: ${LOGGINGAGENT_SERVICE}'
+  Log-Output "Creating service: ${LOGGINGAGENT_SERVICE}"
   sc.exe create $LOGGINGAGENT_SERVICE binpath= "${LOGGINGAGENT_ROOT}\bin\fluent-bit.exe -c \fluent-bit\conf\fluent-bit.conf"
   sc.exe failure $LOGGINGAGENT_SERVICE reset= 30 actions= restart/5000
-  sc.exe query $LOGGINGAGENT_SERVICE
+  Write-VerboseServiceInfoToConsole -Service $LOGGINGAGENT_SERVICE
 
-  Log-Output 'Creating service: ${LOGGINGEXPORTER_SERVICE}'
+  Log-Output "Creating service: ${LOGGINGEXPORTER_SERVICE}"
   sc.exe create  $LOGGINGEXPORTER_SERVICE  binpath= "${LOGGINGEXPORTER_ROOT}\flb-exporter.exe --kubernetes-separator=_ --stackdriver-resource-model=k8s --enable-pod-label-discovery --logtostderr --winsvc  --pod-label-dot-replacement=_"
   sc.exe failure $LOGGINGEXPORTER_SERVICE reset= 30 actions= restart/5000
-  sc.exe query $LOGGINGEXPORTER_SERVICE
+  Write-VerboseServiceInfoToConsole -Service $LOGGINGEXPORTER_SERVICE
 }
 
 # Writes the logging configuration file for Logging agent. Restart-LoggingAgent
@@ -2078,6 +2138,7 @@ function Configure-StackdriverAgent {
   # seconds. The logging agent may die die to various disruptions but can be
   # resumed.
   sc.exe failure StackdriverLogging reset= 0 actions= restart/1000/restart/10000
+  Write-VerboseServiceInfoToConsole -Service 'StackdriverLogging'
 }
 
 # The NODE_NAME placeholder must be replaced with the node's name (hostname).

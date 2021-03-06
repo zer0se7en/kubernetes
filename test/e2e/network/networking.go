@@ -33,6 +33,7 @@ import (
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	e2essh "k8s.io/kubernetes/test/e2e/framework/ssh"
+	"k8s.io/kubernetes/test/e2e/network/common"
 
 	"github.com/onsi/ginkgo"
 )
@@ -75,7 +76,7 @@ func checkConnectivityToHost(f *framework.Framework, nodeName, podName, host str
 	return err
 }
 
-var _ = SIGDescribe("Networking", func() {
+var _ = common.SIGDescribe("Networking", func() {
 	var svcname = "nettest"
 	f := framework.NewDefaultFramework(svcname)
 
@@ -507,16 +508,27 @@ var _ = SIGDescribe("Networking", func() {
 			ginkgo.By("node-Service(hostNetwork): http")
 
 			ginkgo.By(fmt.Sprintf("dialing(http) %v (node) --> %v:%v (config.clusterIP)", config.NodeIP, config.ClusterIP, e2enetwork.ClusterHTTPPort))
-			config.DialFromNode("http", config.ClusterIP, e2enetwork.ClusterHTTPPort, config.MaxTries, 0, config.EndpointHostnames())
+			err = config.DialFromNode("http", config.ClusterIP, e2enetwork.ClusterHTTPPort, config.MaxTries, 0, config.EndpointHostnames())
+			if err != nil {
+				framework.Failf("failed dialing endpoint, %v", err)
+			}
 			ginkgo.By(fmt.Sprintf("dialing(http) %v (node) --> %v:%v (nodeIP)", config.NodeIP, config.NodeIP, config.NodeHTTPPort))
-			config.DialFromNode("http", config.NodeIP, config.NodeHTTPPort, config.MaxTries, 0, config.EndpointHostnames())
-
+			err = config.DialFromNode("http", config.NodeIP, config.NodeHTTPPort, config.MaxTries, 0, config.EndpointHostnames())
+			if err != nil {
+				framework.Failf("failed dialing endpoint, %v", err)
+			}
 			ginkgo.By("node-Service(hostNetwork): udp")
 
 			ginkgo.By(fmt.Sprintf("dialing(udp) %v (node) --> %v:%v (config.clusterIP)", config.NodeIP, config.ClusterIP, e2enetwork.ClusterUDPPort))
-			config.DialFromNode("udp", config.ClusterIP, e2enetwork.ClusterUDPPort, config.MaxTries, 0, config.EndpointHostnames())
+			err = config.DialFromNode("udp", config.ClusterIP, e2enetwork.ClusterUDPPort, config.MaxTries, 0, config.EndpointHostnames())
+			if err != nil {
+				framework.Failf("failed dialing endpoint, %v", err)
+			}
 			ginkgo.By(fmt.Sprintf("dialing(udp) %v (node) --> %v:%v (nodeIP)", config.NodeIP, config.NodeIP, config.NodeUDPPort))
-			config.DialFromNode("udp", config.NodeIP, config.NodeUDPPort, config.MaxTries, 0, config.EndpointHostnames())
+			err = config.DialFromNode("udp", config.NodeIP, config.NodeUDPPort, config.MaxTries, 0, config.EndpointHostnames())
+			if err != nil {
+				framework.Failf("failed dialing endpoint, %v", err)
+			}
 
 			ginkgo.By("handle large requests: http(hostNetwork)")
 

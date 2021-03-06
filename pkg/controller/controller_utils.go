@@ -39,14 +39,16 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apimachinery/pkg/util/wait"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	clientset "k8s.io/client-go/kubernetes"
-	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	clientretry "k8s.io/client-go/util/retry"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
+	"k8s.io/kubernetes/pkg/apis/core/helper"
 	_ "k8s.io/kubernetes/pkg/apis/core/install"
 	"k8s.io/kubernetes/pkg/apis/core/validation"
+	"k8s.io/kubernetes/pkg/features"
 	hashutil "k8s.io/kubernetes/pkg/util/hash"
 	taintutils "k8s.io/kubernetes/pkg/util/taints"
 	"k8s.io/utils/integer"
@@ -792,15 +794,17 @@ func (s ActivePods) Less(i, j int) bool {
 //    is unknown, and a pod whose phase is unknown comes before a running pod.
 // 3. If exactly one of the pods is ready, the pod that is not ready comes
 //    before the ready pod.
-// 4. If the pods' ranks differ, the pod with greater rank comes before the pod
+// 4. If controller.kubernetes.io/pod-deletion-cost annotation is set, then
+//    the pod with the lower value will come first.
+// 5. If the pods' ranks differ, the pod with greater rank comes before the pod
 //    with lower rank.
-// 5. If both pods are ready but have not been ready for the same amount of
+// 6. If both pods are ready but have not been ready for the same amount of
 //    time, the pod that has been ready for a shorter amount of time comes
 //    before the pod that has been ready for longer.
-// 6. If one pod has a container that has restarted more than any container in
+// 7. If one pod has a container that has restarted more than any container in
 //    the other pod, the pod with the container with more restarts comes
 //    before the other pod.
-// 7. If the pods' creation times differ, the pod that was created more recently
+// 8. If the pods' creation times differ, the pod that was created more recently
 //    comes before the older pod.
 //
 // If none of these rules matches, the second pod comes before the first pod.
@@ -843,7 +847,17 @@ func (s ActivePodsWithRanks) Less(i, j int) bool {
 	if podutil.IsPodReady(s.Pods[i]) != podutil.IsPodReady(s.Pods[j]) {
 		return !podutil.IsPodReady(s.Pods[i])
 	}
-	// 4. Doubled up < not doubled up
+
+	// 4. higher pod-deletion-cost < lower pod-deletion cost
+	if utilfeature.DefaultFeatureGate.Enabled(features.PodDeletionCost) {
+		pi, _ := helper.GetDeletionCostFromPodAnnotations(s.Pods[i].Annotations)
+		pj, _ := helper.GetDeletionCostFromPodAnnotations(s.Pods[j].Annotations)
+		if pi != pj {
+			return pi < pj
+		}
+	}
+
+	// 5. Doubled up < not doubled up
 	// If one of the two pods is on the same node as one or more additional
 	// ready pods that belong to the same replicaset, whichever pod has more
 	// colocated ready pods is less
@@ -852,7 +866,7 @@ func (s ActivePodsWithRanks) Less(i, j int) bool {
 	}
 	// TODO: take availability into account when we push minReadySeconds information from deployment into pods,
 	//       see https://github.com/kubernetes/kubernetes/issues/22065
-	// 5. Been ready for empty time < less time < more time
+	// 6. Been ready for empty time < less time < more time
 	// If both pods are ready, the latest ready one is smaller
 	if podutil.IsPodReady(s.Pods[i]) && podutil.IsPodReady(s.Pods[j]) {
 		readyTime1 := podReadyTime(s.Pods[i])
@@ -861,11 +875,11 @@ func (s ActivePodsWithRanks) Less(i, j int) bool {
 			return afterOrZero(readyTime1, readyTime2)
 		}
 	}
-	// 6. Pods with containers with higher restart counts < lower restart counts
+	// 7. Pods with containers with higher restart counts < lower restart counts
 	if maxContainerRestarts(s.Pods[i]) != maxContainerRestarts(s.Pods[j]) {
 		return maxContainerRestarts(s.Pods[i]) > maxContainerRestarts(s.Pods[j])
 	}
-	// 7. Empty creation time pods < newer pods < older pods
+	// 8. Empty creation time pods < newer pods < older pods
 	if !s.Pods[i].CreationTimestamp.Equal(&s.Pods[j].CreationTimestamp) {
 		return afterOrZero(&s.Pods[i].CreationTimestamp, &s.Pods[j].CreationTimestamp)
 	}
@@ -1182,30 +1196,4 @@ func AddOrUpdateLabelsOnNode(kubeClient clientset.Interface, nodeName string, la
 		}
 		return nil
 	})
-}
-
-func getOrCreateServiceAccount(coreClient v1core.CoreV1Interface, namespace, name string) (*v1.ServiceAccount, error) {
-	sa, err := coreClient.ServiceAccounts(namespace).Get(context.TODO(), name, metav1.GetOptions{})
-	if err == nil {
-		return sa, nil
-	}
-	if !apierrors.IsNotFound(err) {
-		return nil, err
-	}
-
-	// Create the namespace if we can't verify it exists.
-	// Tolerate errors, since we don't know whether this component has namespace creation permissions.
-	if _, err := coreClient.Namespaces().Get(context.TODO(), namespace, metav1.GetOptions{}); apierrors.IsNotFound(err) {
-		if _, err = coreClient.Namespaces().Create(context.TODO(), &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-			klog.Warningf("create non-exist namespace %s failed:%v", namespace, err)
-		}
-	}
-
-	// Create the service account
-	sa, err = coreClient.ServiceAccounts(namespace).Create(context.TODO(), &v1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}, metav1.CreateOptions{})
-	if apierrors.IsAlreadyExists(err) {
-		// If we're racing to init and someone else already created it, re-fetch
-		return coreClient.ServiceAccounts(namespace).Get(context.TODO(), name, metav1.GetOptions{})
-	}
-	return sa, err
 }

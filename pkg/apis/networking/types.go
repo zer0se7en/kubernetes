@@ -77,7 +77,7 @@ type NetworkPolicySpec struct {
 	Egress []NetworkPolicyEgressRule
 
 	// List of rule types that the NetworkPolicy relates to.
-	// Valid options are "Ingress", "Egress", or "Ingress,Egress".
+	// Valid options are ["Ingress"], ["Egress"], or ["Ingress", "Egress"].
 	// If this field is not specified, it will default based on the existence of Ingress or Egress rules;
 	// policies that contain an Egress section are assumed to affect Egress, and all policies
 	// (whether or not they contain an Ingress section) are assumed to affect Ingress.
@@ -138,10 +138,21 @@ type NetworkPolicyPort struct {
 	// +optional
 	Protocol *api.Protocol
 
-	// The port on the given protocol. This can either be a numerical or named port on
-	// a pod. If this field is not provided, this matches all port names and numbers.
+	// The port on the given protocol. This can either be a numerical or named
+	// port on a pod. If this field is not provided, this matches all port names and
+	// numbers.
+	// If present, only traffic on the specified protocol AND port will be matched.
 	// +optional
 	Port *intstr.IntOrString
+
+	// If set, indicates that the range of ports from port to endPort, inclusive,
+	// should be allowed by the policy. This field cannot be defined if the port field
+	// is not defined or if the port field is defined as a named (string) port.
+	// The endPort must be equal or greater than port.
+	// This feature is in Alpha state and should be enabled using the Feature Gate
+	// "NetworkPolicyEndPort".
+	// +optional
+	EndPort *int32
 }
 
 // IPBlock describes a particular CIDR (Ex. "192.168.1.1/24","2001:db9::/64") that is allowed
@@ -491,6 +502,7 @@ type IngressServiceBackend struct {
 // ServiceBackendPort is the service port being referenced.
 type ServiceBackendPort struct {
 	// Name is the name of the port on the Service.
+	// This must be an IANA_SVC_NAME (following RFC6335).
 	// This is a mutually exclusive setting with "Number".
 	// +optional
 	Name string
