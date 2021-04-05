@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/component-base/featuregate"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/capabilities"
@@ -4446,7 +4447,7 @@ func TestAlphaLocalStorageCapacityIsolation(t *testing.T) {
 				resource.BinarySI),
 		},
 	}
-	if errs := ValidateResourceRequirements(&containerLimitCase, field.NewPath("resources")); len(errs) != 0 {
+	if errs := ValidateResourceRequirements(&containerLimitCase, field.NewPath("resources"), PodValidationOptions{}); len(errs) != 0 {
 		t.Errorf("expected success: %v", errs)
 	}
 }
@@ -6278,6 +6279,20 @@ func TestValidateContainers(t *testing.T) {
 				Image: "image",
 				Lifecycle: &core.Lifecycle{
 					PreStop: &core.Handler{},
+				},
+				ImagePullPolicy:          "IfNotPresent",
+				TerminationMessagePolicy: "File",
+			},
+		},
+		"invalid readiness probe, terminationGracePeriodSeconds set.": {
+			{
+				Name:  "life-123",
+				Image: "image",
+				ReadinessProbe: &core.Probe{
+					Handler: core.Handler{
+						TCPSocket: &core.TCPSocketAction{},
+					},
+					TerminationGracePeriodSeconds: utilpointer.Int64Ptr(10),
 				},
 				ImagePullPolicy:          "IfNotPresent",
 				TerminationMessagePolicy: "File",
@@ -10135,9 +10150,10 @@ func TestValidateServiceCreate(t *testing.T) {
 	preferDualStack := core.IPFamilyPolicyPreferDualStack
 
 	testCases := []struct {
-		name     string
-		tweakSvc func(svc *core.Service) // given a basic valid service, each test case can customize it
-		numErrs  int
+		name         string
+		tweakSvc     func(svc *core.Service) // given a basic valid service, each test case can customize it
+		numErrs      int
+		featureGates []featuregate.Feature
 	}{
 		{
 			name: "missing namespace",
@@ -10751,6 +10767,22 @@ func TestValidateServiceCreate(t *testing.T) {
 			numErrs: 1,
 		},
 		{
+			name: "nil internalTraffic field when feature gate is on",
+			tweakSvc: func(s *core.Service) {
+				s.Spec.InternalTrafficPolicy = nil
+			},
+			featureGates: []featuregate.Feature{features.ServiceInternalTrafficPolicy},
+			numErrs:      1,
+		},
+		{
+			name: "invalid internalTraffic field",
+			tweakSvc: func(s *core.Service) {
+				invalid := core.ServiceInternalTrafficPolicyType("invalid")
+				s.Spec.InternalTrafficPolicy = &invalid
+			},
+			numErrs: 1,
+		},
+		{
 			name: "nagative healthCheckNodePort field",
 			tweakSvc: func(s *core.Service) {
 				s.Spec.Type = core.ServiceTypeLoadBalancer
@@ -11323,6 +11355,9 @@ func TestValidateServiceCreate(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			for i := range tc.featureGates {
+				defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, tc.featureGates[i], true)()
+			}
 			svc := makeValidService()
 			tc.tweakSvc(&svc)
 			errs := ValidateServiceCreate(&svc)
@@ -16571,7 +16606,7 @@ func TestValidateOverhead(t *testing.T) {
 		},
 	}
 	for _, tc := range successCase {
-		if errs := validateOverhead(tc.overhead, field.NewPath("overheads")); len(errs) != 0 {
+		if errs := validateOverhead(tc.overhead, field.NewPath("overheads"), PodValidationOptions{}); len(errs) != 0 {
 			t.Errorf("%q unexpected error: %v", tc.Name, errs)
 		}
 	}
@@ -16588,7 +16623,7 @@ func TestValidateOverhead(t *testing.T) {
 		},
 	}
 	for _, tc := range errorCase {
-		if errs := validateOverhead(tc.overhead, field.NewPath("resources")); len(errs) == 0 {
+		if errs := validateOverhead(tc.overhead, field.NewPath("resources"), PodValidationOptions{}); len(errs) == 0 {
 			t.Errorf("%q expected error", tc.Name)
 		}
 	}
@@ -17246,5 +17281,88 @@ func TestValidatePodTemplateSpecSeccomp(t *testing.T) {
 	for i, test := range tests {
 		err := ValidatePodTemplateSpec(test.spec, rootFld, PodValidationOptions{})
 		asserttestify.Equal(t, test.expectedErr, err, "TestCase[%d]: %s", i, test.description)
+	}
+}
+
+func TestValidateResourceRequirements(t *testing.T) {
+	path := field.NewPath("resources")
+	tests := []struct {
+		name         string
+		requirements core.ResourceRequirements
+		opts         PodValidationOptions
+	}{
+		{
+			name: "limits and requests of hugepage resource are equal",
+			requirements: core.ResourceRequirements{
+				Limits: core.ResourceList{
+					core.ResourceCPU: resource.MustParse("10"),
+					core.ResourceName(core.ResourceHugePagesPrefix + "2Mi"): resource.MustParse("2Mi"),
+				},
+				Requests: core.ResourceList{
+					core.ResourceCPU: resource.MustParse("10"),
+					core.ResourceName(core.ResourceHugePagesPrefix + "2Mi"): resource.MustParse("2Mi"),
+				},
+			},
+			opts: PodValidationOptions{},
+		},
+		{
+			name: "limits and requests of memory resource are equal",
+			requirements: core.ResourceRequirements{
+				Limits: core.ResourceList{
+					core.ResourceMemory: resource.MustParse("2Mi"),
+				},
+				Requests: core.ResourceList{
+					core.ResourceMemory: resource.MustParse("2Mi"),
+				},
+			},
+			opts: PodValidationOptions{},
+		},
+		{
+			name: "limits and requests of cpu resource are equal",
+			requirements: core.ResourceRequirements{
+				Limits: core.ResourceList{
+					core.ResourceCPU: resource.MustParse("10"),
+				},
+				Requests: core.ResourceList{
+					core.ResourceCPU: resource.MustParse("10"),
+				},
+			},
+			opts: PodValidationOptions{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if errs := ValidateResourceRequirements(&tc.requirements, path, tc.opts); len(errs) != 0 {
+				t.Errorf("unexpected errors: %v", errs)
+			}
+		})
+	}
+
+	errTests := []struct {
+		name         string
+		requirements core.ResourceRequirements
+		opts         PodValidationOptions
+	}{
+		{
+			name: "hugepage resource without cpu or memory",
+			requirements: core.ResourceRequirements{
+				Limits: core.ResourceList{
+					core.ResourceName(core.ResourceHugePagesPrefix + "2Mi"): resource.MustParse("2Mi"),
+				},
+				Requests: core.ResourceList{
+					core.ResourceName(core.ResourceHugePagesPrefix + "2Mi"): resource.MustParse("2Mi"),
+				},
+			},
+			opts: PodValidationOptions{},
+		},
+	}
+
+	for _, tc := range errTests {
+		t.Run(tc.name, func(t *testing.T) {
+			if errs := ValidateResourceRequirements(&tc.requirements, path, tc.opts); len(errs) == 0 {
+				t.Error("expected errors")
+			}
+		})
 	}
 }

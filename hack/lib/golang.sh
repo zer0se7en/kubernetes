@@ -313,10 +313,11 @@ readonly KUBE_TEST_SERVER_BINARIES=("${KUBE_TEST_SERVER_TARGETS[@]##*/}")
 readonly KUBE_TEST_SERVER_PLATFORMS=("${KUBE_SERVER_PLATFORMS[@]:+"${KUBE_SERVER_PLATFORMS[@]}"}")
 
 # Gigabytes necessary for parallel platform builds.
-# As of January 2018, RAM usage is exceeding 30G.
+# As of March 2021 (go 1.16/amd64), the RSS usage is 2GiB by using cached
+# memory of 15GiB.
 # This variable can be overwritten at your own risk.
-# It's defaulting to 40G to provide some headroom
-readonly KUBE_PARALLEL_BUILD_MEMORY=${KUBE_PARALLEL_BUILD_MEMORY:-40}
+# It's defaulting to 20G to provide some headroom.
+readonly KUBE_PARALLEL_BUILD_MEMORY=${KUBE_PARALLEL_BUILD_MEMORY:-20}
 
 readonly KUBE_ALL_TARGETS=(
   "${KUBE_SERVER_TARGETS[@]}"
@@ -458,20 +459,6 @@ kube::golang::create_gopath_tree() {
   if [[ ! -e "${go_pkg_dir}" || "$(readlink "${go_pkg_dir}")" != "${KUBE_ROOT}" ]]; then
     ln -snf "${KUBE_ROOT}" "${go_pkg_dir}"
   fi
-
-  # Using bazel with a recursive target (e.g. bazel test ...) will abort due to
-  # the symlink loop created in this function, so create this special file which
-  # tells bazel not to follow the symlink.
-  touch "${go_pkg_basedir}/DONT_FOLLOW_SYMLINKS_WHEN_TRAVERSING_THIS_DIRECTORY_VIA_A_RECURSIVE_TARGET_PATTERN"
-  # Additionally, the //:package-srcs glob recursively includes all
-  # subdirectories, and similarly fails due to the symlink loop. By creating a
-  # BUILD.bazel file, we effectively create a dummy package, which stops the
-  # glob from descending further into the tree and hitting the loop.
-  cat >"${KUBE_GOPATH}/BUILD.bazel" <<EOF
-# This dummy BUILD file prevents Bazel from trying to descend through the
-# infinite loop created by the symlink at
-# ${go_pkg_dir}
-EOF
 }
 
 # Ensure the go tool exists and is a viable version.
@@ -874,7 +861,7 @@ kube::golang::build_binaries() {
         cat "/tmp//${platform//\//_}.build"
       done
 
-      exit ${fails}
+      exit "${fails}"
     else
       for platform in "${platforms[@]}"; do
         kube::log::status "Building go targets for ${platform}:" "${targets[@]}"

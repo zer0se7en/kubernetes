@@ -345,6 +345,52 @@ func usesMultipleHugePageResources(podSpec *api.PodSpec) bool {
 	return len(hugePageResources) > 1
 }
 
+func checkContainerUseIndivisibleHugePagesValues(container api.Container) bool {
+	for resourceName, quantity := range container.Resources.Limits {
+		if helper.IsHugePageResourceName(resourceName) {
+			if !helper.IsHugePageResourceValueDivisible(resourceName, quantity) {
+				return true
+			}
+		}
+	}
+
+	for resourceName, quantity := range container.Resources.Requests {
+		if helper.IsHugePageResourceName(resourceName) {
+			if !helper.IsHugePageResourceValueDivisible(resourceName, quantity) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// usesIndivisibleHugePagesValues returns true if the one of the containers uses non-integer multiple
+// of huge page unit size
+func usesIndivisibleHugePagesValues(podSpec *api.PodSpec) bool {
+	foundIndivisibleHugePagesValue := false
+	VisitContainers(podSpec, AllContainers, func(c *api.Container, containerType ContainerType) bool {
+		if checkContainerUseIndivisibleHugePagesValues(*c) {
+			foundIndivisibleHugePagesValue = true
+		}
+		return !foundIndivisibleHugePagesValue // continue visiting if we haven't seen an invalid value yet
+	})
+
+	if foundIndivisibleHugePagesValue {
+		return true
+	}
+
+	for resourceName, quantity := range podSpec.Overhead {
+		if helper.IsHugePageResourceName(resourceName) {
+			if !helper.IsHugePageResourceValueDivisible(resourceName, quantity) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 // GetValidationOptionsFromPodSpecAndMeta returns validation options based on pod specs and metadata
 func GetValidationOptionsFromPodSpecAndMeta(podSpec, oldPodSpec *api.PodSpec, podMeta, oldPodMeta *metav1.ObjectMeta) apivalidation.PodValidationOptions {
 	// default pod validation options based on feature gate
@@ -354,6 +400,8 @@ func GetValidationOptionsFromPodSpecAndMeta(podSpec, oldPodSpec *api.PodSpec, po
 		// Allow pod spec to use hugepages in downward API if feature is enabled
 		AllowDownwardAPIHugePages:   utilfeature.DefaultFeatureGate.Enabled(features.DownwardAPIHugePages),
 		AllowInvalidPodDeletionCost: !utilfeature.DefaultFeatureGate.Enabled(features.PodDeletionCost),
+		// Do not allow pod spec to use non-integer multiple of huge page unit size default
+		AllowIndivisibleHugePagesValues: false,
 	}
 
 	if oldPodSpec != nil {
@@ -368,12 +416,16 @@ func GetValidationOptionsFromPodSpecAndMeta(podSpec, oldPodSpec *api.PodSpec, po
 				return !opts.AllowDownwardAPIHugePages
 			})
 		}
+
+		// if old spec used non-integer multiple of huge page unit size, we must allow it
+		opts.AllowIndivisibleHugePagesValues = usesIndivisibleHugePagesValues(oldPodSpec)
 	}
 	if oldPodMeta != nil && !opts.AllowInvalidPodDeletionCost {
 		// This is an update, so validate only if the existing object was valid.
 		_, err := helper.GetDeletionCostFromPodAnnotations(oldPodMeta.Annotations)
 		opts.AllowInvalidPodDeletionCost = err != nil
 	}
+
 	return opts
 }
 
@@ -495,6 +547,20 @@ func dropDisabledFields(
 			for i := range c.VolumeMounts {
 				c.VolumeMounts[i].SubPathExpr = ""
 			}
+			return true
+		})
+	}
+
+	if !utilfeature.DefaultFeatureGate.Enabled(features.ProbeTerminationGracePeriod) && !probeGracePeriodInUse(oldPodSpec) {
+		// Set pod-level terminationGracePeriodSeconds to nil if the feature is disabled and it is not used
+		VisitContainers(podSpec, AllContainers, func(c *api.Container, containerType ContainerType) bool {
+			if c.LivenessProbe != nil {
+				c.LivenessProbe.TerminationGracePeriodSeconds = nil
+			}
+			if c.StartupProbe != nil {
+				c.StartupProbe.TerminationGracePeriodSeconds = nil
+			}
+			// cannot be set for readiness probes
 			return true
 		})
 	}
@@ -752,6 +818,27 @@ func subpathExprInUse(podSpec *api.PodSpec) bool {
 				inUse = true
 				return false
 			}
+		}
+		return true
+	})
+
+	return inUse
+}
+
+// probeGracePeriodInUse returns true if the pod spec is non-nil and has a probe that makes use
+// of the probe-level terminationGracePeriodSeconds feature
+func probeGracePeriodInUse(podSpec *api.PodSpec) bool {
+	if podSpec == nil {
+		return false
+	}
+
+	var inUse bool
+	VisitContainers(podSpec, AllContainers, func(c *api.Container, containerType ContainerType) bool {
+		// cannot be set for readiness probes
+		if (c.LivenessProbe != nil && c.LivenessProbe.TerminationGracePeriodSeconds != nil) ||
+			(c.StartupProbe != nil && c.StartupProbe.TerminationGracePeriodSeconds != nil) {
+			inUse = true
+			return false
 		}
 		return true
 	})

@@ -242,6 +242,7 @@ func newTestKubeletWithImageList(
 
 	kubelet.probeManager = probetest.FakeManager{}
 	kubelet.livenessManager = proberesults.NewManager()
+	kubelet.readinessManager = proberesults.NewManager()
 	kubelet.startupManager = proberesults.NewManager()
 
 	fakeContainerManager := cm.NewFakeContainerManager()
@@ -254,7 +255,7 @@ func newTestKubeletWithImageList(
 	}
 
 	volumeStatsAggPeriod := time.Second * 10
-	kubelet.resourceAnalyzer = serverstats.NewResourceAnalyzer(kubelet, volumeStatsAggPeriod)
+	kubelet.resourceAnalyzer = serverstats.NewResourceAnalyzer(kubelet, volumeStatsAggPeriod, kubelet.recorder)
 
 	fakeHostStatsProvider := stats.NewFakeHostStatsProvider()
 

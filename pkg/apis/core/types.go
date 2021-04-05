@@ -157,7 +157,7 @@ type VolumeSource struct {
 	// CSI (Container Storage Interface) represents ephemeral storage that is handled by certain external CSI drivers (Beta feature).
 	// +optional
 	CSI *CSIVolumeSource
-	// Ephemeral represents a volume that is handled by a cluster storage driver (Alpha feature).
+	// Ephemeral represents a volume that is handled by a cluster storage driver.
 	// The volume's lifecycle is tied to the pod that defines it - it will be created before the pod starts,
 	// and deleted when the pod is removed.
 	//
@@ -181,6 +181,9 @@ type VolumeSource struct {
 	//
 	// A pod can use both types of ephemeral volumes and
 	// persistent volumes at the same time.
+	//
+	// This is a beta feature and only available when the GenericEphemeralVolume
+	// feature gate is enabled.
 	//
 	// +optional
 	Ephemeral *EphemeralVolumeSource
@@ -1717,11 +1720,6 @@ type EphemeralVolumeSource struct {
 	//
 	// Required, must not be nil.
 	VolumeClaimTemplate *PersistentVolumeClaimTemplate
-
-	// ReadOnly specifies a read-only configuration for the volume.
-	// Defaults to false (read/write).
-	// +optional
-	ReadOnly bool
 }
 
 // PersistentVolumeClaimTemplate is used to produce
@@ -2022,6 +2020,17 @@ type Probe struct {
 	// Minimum consecutive failures for the probe to be considered failed after having succeeded.
 	// +optional
 	FailureThreshold int32
+	// Optional duration in seconds the pod needs to terminate gracefully upon probe failure.
+	// The grace period is the duration in seconds after the processes running in the pod are sent
+	// a termination signal and the time when the processes are forcibly halted with a kill signal.
+	// Set this value longer than the expected cleanup time for your process.
+	// If this value is nil, the pod's terminationGracePeriodSeconds will be used. Otherwise, this
+	// value overrides the value provided by the pod spec.
+	// Value must be non-negative integer. The value zero indicates stop immediately via
+	// the kill signal (no opportunity to shut down).
+	// This is an alpha field and requires enabling ProbeTerminationGracePeriod feature gate.
+	// +optional
+	TerminationGracePeriodSeconds *int64
 }
 
 // PullPolicy describes a policy for if/when to pull a container image
@@ -2721,7 +2730,8 @@ type PodSpec struct {
 	// +optional
 	RestartPolicy RestartPolicy
 	// Optional duration in seconds the pod needs to terminate gracefully. May be decreased in delete request.
-	// Value must be non-negative integer. The value zero indicates delete immediately.
+	// Value must be non-negative integer. The value zero indicates stop immediately via the kill
+	// signal (no opportunity to shut down).
 	// If this value is nil, the default grace period will be used instead.
 	// The grace period is the duration in seconds after the processes running in the pod are sent
 	// a termination signal and the time when the processes are forcibly halted with a kill signal.
@@ -3475,6 +3485,19 @@ const (
 	ServiceTypeExternalName ServiceType = "ExternalName"
 )
 
+// ServiceInternalTrafficPolicyType describes the type of traffic routing for
+// internal traffic
+type ServiceInternalTrafficPolicyType string
+
+const (
+	// ServiceInternalTrafficPolicyCluster routes traffic to all endpoints
+	ServiceInternalTrafficPolicyCluster ServiceInternalTrafficPolicyType = "Cluster"
+
+	// ServiceInternalTrafficPolicyLocal only routes to node-local
+	// endpoints, otherwise drops the traffic
+	ServiceInternalTrafficPolicyLocal ServiceInternalTrafficPolicyType = "Local"
+)
+
 // ServiceExternalTrafficPolicyType string
 type ServiceExternalTrafficPolicyType string
 
@@ -3739,9 +3762,19 @@ type ServiceSpec struct {
 	// implementation (e.g. cloud providers) should ignore Services that set this field.
 	// This field can only be set when creating or updating a Service to type 'LoadBalancer'.
 	// Once set, it can not be changed. This field will be wiped when a service is updated to a non 'LoadBalancer' type.
-	// featureGate=LoadBalancerClass
+	// +featureGate=LoadBalancerClass
 	// +optional
 	LoadBalancerClass *string
+
+	// InternalTrafficPolicy specifies if the cluster internal traffic
+	// should be routed to all endpoints or node-local endpoints only.
+	// "Cluster" routes internal traffic to a Service to all endpoints.
+	// "Local" routes traffic to node-local endpoints only, traffic is
+	// dropped if no node-local endpoints are ready.
+	// The default value is "Cluster".
+	// +featureGate=ServiceInternalTrafficPolicy
+	// +optional
+	InternalTrafficPolicy *ServiceInternalTrafficPolicyType
 }
 
 // ServicePort represents the port on which the service is exposed
