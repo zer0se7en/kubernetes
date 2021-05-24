@@ -27,12 +27,10 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/diff"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
-	"k8s.io/kubernetes/pkg/apis/core"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/features"
 )
@@ -718,14 +716,14 @@ func TestDropSubPath(t *testing.T) {
 
 					// old pod should never be changed
 					if !reflect.DeepEqual(oldPod, oldPodInfo.pod()) {
-						t.Errorf("old pod changed: %v", diff.ObjectReflectDiff(oldPod, oldPodInfo.pod()))
+						t.Errorf("old pod changed: %v", cmp.Diff(oldPod, oldPodInfo.pod()))
 					}
 
 					switch {
 					case enabled || oldPodHasSubpaths:
 						// new pod should not be changed if the feature is enabled, or if the old pod had subpaths
 						if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-							t.Errorf("new pod changed: %v", diff.ObjectReflectDiff(newPod, newPodInfo.pod()))
+							t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 						}
 					case newPodHasSubpaths:
 						// new pod should be changed
@@ -734,12 +732,12 @@ func TestDropSubPath(t *testing.T) {
 						}
 						// new pod should not have subpaths
 						if !reflect.DeepEqual(newPod, podWithoutSubpaths()) {
-							t.Errorf("new pod had subpaths: %v", diff.ObjectReflectDiff(newPod, podWithoutSubpaths()))
+							t.Errorf("new pod had subpaths: %v", cmp.Diff(newPod, podWithoutSubpaths()))
 						}
 					default:
 						// new pod should not need to be changed
 						if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-							t.Errorf("new pod changed: %v", diff.ObjectReflectDiff(newPod, newPodInfo.pod()))
+							t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 						}
 					}
 				})
@@ -826,14 +824,14 @@ func TestDropProcMount(t *testing.T) {
 
 					// old pod should never be changed
 					if !reflect.DeepEqual(oldPod, oldPodInfo.pod()) {
-						t.Errorf("old pod changed: %v", diff.ObjectReflectDiff(oldPod, oldPodInfo.pod()))
+						t.Errorf("old pod changed: %v", cmp.Diff(oldPod, oldPodInfo.pod()))
 					}
 
 					switch {
 					case enabled || oldPodHasProcMount:
 						// new pod should not be changed if the feature is enabled, or if the old pod had ProcMount
 						if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-							t.Errorf("new pod changed: %v", diff.ObjectReflectDiff(newPod, newPodInfo.pod()))
+							t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 						}
 					case newPodHasProcMount:
 						// new pod should be changed
@@ -847,7 +845,7 @@ func TestDropProcMount(t *testing.T) {
 					default:
 						// new pod should not need to be changed
 						if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-							t.Errorf("new pod changed: %v", diff.ObjectReflectDiff(newPod, newPodInfo.pod()))
+							t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 						}
 					}
 				})
@@ -936,14 +934,14 @@ func TestDropEmptyDirSizeLimit(t *testing.T) {
 
 					// old pod should never be changed
 					if !reflect.DeepEqual(oldPod, oldPodInfo.pod()) {
-						t.Errorf("old pod changed: %v", diff.ObjectReflectDiff(oldPod, oldPodInfo.pod()))
+						t.Errorf("old pod changed: %v", cmp.Diff(oldPod, oldPodInfo.pod()))
 					}
 
 					switch {
 					case enabled || oldPodHasEmptyDirSizeLimit:
 						// new pod should not be changed if the feature is enabled, or if the old pod had EmptyDir SizeLimit
 						if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-							t.Errorf("new pod changed: %v", diff.ObjectReflectDiff(newPod, newPodInfo.pod()))
+							t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 						}
 					case newPodHasEmptyDirSizeLimit:
 						// new pod should be changed
@@ -952,12 +950,12 @@ func TestDropEmptyDirSizeLimit(t *testing.T) {
 						}
 						// new pod should not have EmptyDir SizeLimit
 						if !reflect.DeepEqual(newPod, podWithoutEmptyDirSizeLimit()) {
-							t.Errorf("new pod had EmptyDir SizeLimit: %v", diff.ObjectReflectDiff(newPod, podWithoutEmptyDirSizeLimit()))
+							t.Errorf("new pod had EmptyDir SizeLimit: %v", cmp.Diff(newPod, podWithoutEmptyDirSizeLimit()))
 						}
 					default:
 						// new pod should not need to be changed
 						if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-							t.Errorf("new pod changed: %v", diff.ObjectReflectDiff(newPod, newPodInfo.pod()))
+							t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 						}
 					}
 				})
@@ -1018,14 +1016,14 @@ func TestDropAppArmor(t *testing.T) {
 
 					// old pod should never be changed
 					if !reflect.DeepEqual(oldPod, oldPodInfo.pod()) {
-						t.Errorf("old pod changed: %v", diff.ObjectReflectDiff(oldPod, oldPodInfo.pod()))
+						t.Errorf("old pod changed: %v", cmp.Diff(oldPod, oldPodInfo.pod()))
 					}
 
 					switch {
 					case enabled || oldPodHasAppArmor:
 						// new pod should not be changed if the feature is enabled, or if the old pod had AppArmor
 						if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-							t.Errorf("new pod changed: %v", diff.ObjectReflectDiff(newPod, newPodInfo.pod()))
+							t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 						}
 					case newPodHasAppArmor:
 						// new pod should be changed
@@ -1034,12 +1032,12 @@ func TestDropAppArmor(t *testing.T) {
 						}
 						// new pod should not have AppArmor
 						if !reflect.DeepEqual(newPod, podWithoutAppArmor()) {
-							t.Errorf("new pod had EmptyDir SizeLimit: %v", diff.ObjectReflectDiff(newPod, podWithoutAppArmor()))
+							t.Errorf("new pod had EmptyDir SizeLimit: %v", cmp.Diff(newPod, podWithoutAppArmor()))
 						}
 					default:
 						// new pod should not need to be changed
 						if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-							t.Errorf("new pod changed: %v", diff.ObjectReflectDiff(newPod, newPodInfo.pod()))
+							t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 						}
 					}
 				})
@@ -1111,14 +1109,14 @@ func TestDropSubPathExpr(t *testing.T) {
 
 				// old pod should never be changed
 				if !reflect.DeepEqual(oldPod, oldPodInfo.pod()) {
-					t.Errorf("old pod changed: %v", diff.ObjectReflectDiff(oldPod, oldPodInfo.pod()))
+					t.Errorf("old pod changed: %v", cmp.Diff(oldPod, oldPodInfo.pod()))
 				}
 
 				switch {
 				case enabled || oldPodHasSubpaths:
 					// new pod should not be changed if the feature is enabled, or if the old pod had subpaths
 					if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-						t.Errorf("new pod changed: %v", diff.ObjectReflectDiff(newPod, newPodInfo.pod()))
+						t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 					}
 				case newPodHasSubpaths:
 					// new pod should be changed
@@ -1127,12 +1125,12 @@ func TestDropSubPathExpr(t *testing.T) {
 					}
 					// new pod should not have subpaths
 					if !reflect.DeepEqual(newPod, podWithoutSubpaths()) {
-						t.Errorf("new pod had subpaths: %v", diff.ObjectReflectDiff(newPod, podWithoutSubpaths()))
+						t.Errorf("new pod had subpaths: %v", cmp.Diff(newPod, podWithoutSubpaths()))
 					}
 				default:
 					// new pod should not need to be changed
 					if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-						t.Errorf("new pod changed: %v", diff.ObjectReflectDiff(newPod, newPodInfo.pod()))
+						t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 					}
 				}
 			})
@@ -1208,14 +1206,14 @@ func TestDropProbeGracePeriod(t *testing.T) {
 
 				// old pod should never be changed
 				if !reflect.DeepEqual(oldPod, oldPodInfo.pod()) {
-					t.Errorf("old pod changed: %v", diff.ObjectReflectDiff(oldPod, oldPodInfo.pod()))
+					t.Errorf("old pod changed: %v", cmp.Diff(oldPod, oldPodInfo.pod()))
 				}
 
 				switch {
 				case enabled || oldPodHasGracePeriod:
 					// new pod should not be changed if the feature is enabled, or if the old pod had subpaths
 					if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-						t.Errorf("new pod changed: %v", diff.ObjectReflectDiff(newPod, newPodInfo.pod()))
+						t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 					}
 				case newPodHasGracePeriod:
 					// new pod should be changed
@@ -1224,12 +1222,12 @@ func TestDropProbeGracePeriod(t *testing.T) {
 					}
 					// new pod should not have subpaths
 					if !reflect.DeepEqual(newPod, podWithoutProbeGracePeriod()) {
-						t.Errorf("new pod had probe-level terminationGracePeriod: %v", diff.ObjectReflectDiff(newPod, podWithoutProbeGracePeriod()))
+						t.Errorf("new pod had probe-level terminationGracePeriod: %v", cmp.Diff(newPod, podWithoutProbeGracePeriod()))
 					}
 				default:
 					// new pod should not need to be changed
 					if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-						t.Errorf("new pod changed: %v", diff.ObjectReflectDiff(newPod, newPodInfo.pod()))
+						t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 					}
 				}
 			})
@@ -1328,11 +1326,11 @@ func TestDropStatusPodIPs(t *testing.T) {
 			old := tc.oldPodStatus.DeepCopy()
 			// old pod status should never be changed
 			if !reflect.DeepEqual(tc.oldPodStatus, old) {
-				t.Errorf("%v: old pod status changed: %v", tc.name, diff.ObjectReflectDiff(tc.oldPodStatus, old))
+				t.Errorf("%v: old pod status changed: %v", tc.name, cmp.Diff(tc.oldPodStatus, old))
 			}
 
 			if !reflect.DeepEqual(tc.podStatus, tc.comparePodStatus) {
-				t.Errorf("%v: unexpected pod status: %v", tc.name, diff.ObjectReflectDiff(tc.podStatus, tc.comparePodStatus))
+				t.Errorf("%v: unexpected pod status: %v", tc.name, cmp.Diff(tc.podStatus, tc.comparePodStatus))
 			}
 		}()
 	}
@@ -1397,14 +1395,14 @@ func TestDropEphemeralContainers(t *testing.T) {
 
 					// old pod should never be changed
 					if !reflect.DeepEqual(oldPod, oldPodInfo.pod()) {
-						t.Errorf("old pod changed: %v", diff.ObjectReflectDiff(oldPod, oldPodInfo.pod()))
+						t.Errorf("old pod changed: %v", cmp.Diff(oldPod, oldPodInfo.pod()))
 					}
 
 					switch {
 					case enabled || oldPodHasEphemeralContainers:
 						// new pod should not be changed if the feature is enabled, or if the old pod had subpaths
 						if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-							t.Errorf("new pod changed: %v", diff.ObjectReflectDiff(newPod, newPodInfo.pod()))
+							t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 						}
 					case newPodHasEphemeralContainers:
 						// new pod should be changed
@@ -1413,12 +1411,12 @@ func TestDropEphemeralContainers(t *testing.T) {
 						}
 						// new pod should not have subpaths
 						if !reflect.DeepEqual(newPod, podWithoutEphemeralContainers()) {
-							t.Errorf("new pod had subpaths: %v", diff.ObjectReflectDiff(newPod, podWithoutEphemeralContainers()))
+							t.Errorf("new pod had subpaths: %v", cmp.Diff(newPod, podWithoutEphemeralContainers()))
 						}
 					default:
 						// new pod should not need to be changed
 						if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-							t.Errorf("new pod changed: %v", diff.ObjectReflectDiff(newPod, newPodInfo.pod()))
+							t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 						}
 					}
 				})
@@ -1446,19 +1444,19 @@ func TestValidatePodDeletionCostOption(t *testing.T) {
 		},
 		{
 			name:                            "UpdateFeatureDisabled",
-			oldPodMeta:                      &metav1.ObjectMeta{Annotations: map[string]string{core.PodDeletionCost: "100"}},
+			oldPodMeta:                      &metav1.ObjectMeta{Annotations: map[string]string{api.PodDeletionCost: "100"}},
 			featureEnabled:                  false,
 			wantAllowInvalidPodDeletionCost: true,
 		},
 		{
 			name:                            "UpdateFeatureEnabledValidOldValue",
-			oldPodMeta:                      &metav1.ObjectMeta{Annotations: map[string]string{core.PodDeletionCost: "100"}},
+			oldPodMeta:                      &metav1.ObjectMeta{Annotations: map[string]string{api.PodDeletionCost: "100"}},
 			featureEnabled:                  true,
 			wantAllowInvalidPodDeletionCost: false,
 		},
 		{
 			name:                            "UpdateFeatureEnabledValidOldValue",
-			oldPodMeta:                      &metav1.ObjectMeta{Annotations: map[string]string{core.PodDeletionCost: "invalid-value"}},
+			oldPodMeta:                      &metav1.ObjectMeta{Annotations: map[string]string{api.PodDeletionCost: "invalid-value"}},
 			featureEnabled:                  true,
 			wantAllowInvalidPodDeletionCost: true,
 		},
