@@ -28,10 +28,12 @@ import (
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/apiserver/pkg/storage/names"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/api/pod"
 	"k8s.io/kubernetes/pkg/apis/apps"
 	"k8s.io/kubernetes/pkg/apis/apps/validation"
+	"k8s.io/kubernetes/pkg/features"
 	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
 )
 
@@ -85,6 +87,7 @@ func (statefulSetStrategy) PrepareForCreate(ctx context.Context, obj runtime.Obj
 
 	statefulSet.Generation = 1
 
+	dropStatefulSetDisabledFields(statefulSet, nil)
 	pod.DropDisabledTemplateFields(&statefulSet.Spec.Template, nil)
 }
 
@@ -95,6 +98,7 @@ func (statefulSetStrategy) PrepareForUpdate(ctx context.Context, obj, old runtim
 	// Update is not allowed to set status
 	newStatefulSet.Status = oldStatefulSet.Status
 
+	dropStatefulSetDisabledFields(newStatefulSet, oldStatefulSet)
 	pod.DropDisabledTemplateFields(&newStatefulSet.Spec.Template, &oldStatefulSet.Spec.Template)
 
 	// Any changes to the spec increment the generation number, any changes to the
@@ -103,7 +107,37 @@ func (statefulSetStrategy) PrepareForUpdate(ctx context.Context, obj, old runtim
 	if !apiequality.Semantic.DeepEqual(oldStatefulSet.Spec, newStatefulSet.Spec) {
 		newStatefulSet.Generation = oldStatefulSet.Generation + 1
 	}
+}
 
+// dropStatefulSetDisabledFields drops fields that are not used if their associated feature gates
+// are not enabled.
+// The typical pattern is:
+//     if !utilfeature.DefaultFeatureGate.Enabled(features.MyFeature) && !myFeatureInUse(oldSvc) {
+//         newSvc.Spec.MyFeature = nil
+//     }
+func dropStatefulSetDisabledFields(newSS *apps.StatefulSet, oldSS *apps.StatefulSet) {
+	if !utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetMinReadySeconds) {
+		if !minReadySecondsFieldsInUse(oldSS) {
+			newSS.Spec.MinReadySeconds = int32(0)
+		}
+	}
+
+	if !utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetAutoDeletePVC) {
+		if oldSS == nil || oldSS.Spec.PersistentVolumeClaimRetentionPolicy == nil {
+			newSS.Spec.PersistentVolumeClaimRetentionPolicy = nil
+		}
+	}
+}
+
+// minReadySecondsFieldsInUse returns true if fields related to StatefulSet minReadySeconds are set and
+// are greater than 0
+func minReadySecondsFieldsInUse(ss *apps.StatefulSet) bool {
+	if ss == nil {
+		return false
+	} else if ss.Spec.MinReadySeconds >= 0 {
+		return true
+	}
+	return false
 }
 
 // Validate validates a new StatefulSet.

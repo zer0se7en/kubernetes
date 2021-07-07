@@ -607,8 +607,8 @@ func createJobWithDefaults(ctx context.Context, clientSet clientset.Interface, n
 }
 
 func setup(t *testing.T, nsBaseName string) (framework.CloseFunc, *restclient.Config, clientset.Interface, *v1.Namespace) {
-	masterConfig := framework.NewIntegrationTestMasterConfig()
-	_, server, masterCloseFn := framework.RunAMaster(masterConfig)
+	controlPlaneConfig := framework.NewIntegrationTestControlPlaneConfig()
+	_, server, apiServerCloseFn := framework.RunAnAPIServer(controlPlaneConfig)
 
 	config := restclient.Config{Host: server.URL}
 	clientSet, err := clientset.NewForConfig(&config)
@@ -618,7 +618,7 @@ func setup(t *testing.T, nsBaseName string) (framework.CloseFunc, *restclient.Co
 	ns := framework.CreateTestingNamespace(nsBaseName, server, t)
 	closeFn := func() {
 		framework.DeleteTestingNamespace(ns, server, t)
-		masterCloseFn()
+		apiServerCloseFn()
 	}
 	return closeFn, &config, clientSet, ns
 }

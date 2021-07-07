@@ -26,13 +26,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
-
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apimachinery/pkg/util/wait"
 	bootstrapapi "k8s.io/cluster-bootstrap/token/api"
 	utilnet "k8s.io/utils/net"
+
+	"github.com/pkg/errors"
 )
 
 const (
@@ -286,7 +286,7 @@ const (
 	MinExternalEtcdVersion = "3.2.18"
 
 	// DefaultEtcdVersion indicates the default etcd version that kubeadm uses
-	DefaultEtcdVersion = "3.4.13-3"
+	DefaultEtcdVersion = "3.5.0-rc.0-0"
 
 	// Etcd defines variable used internally when referring to etcd component
 	Etcd = "etcd"
@@ -322,10 +322,10 @@ const (
 	CoreDNSDeploymentName = "coredns"
 
 	// CoreDNSImageName specifies the name of the image for CoreDNS add-on
-	CoreDNSImageName = "coredns/coredns"
+	CoreDNSImageName = "coredns"
 
 	// CoreDNSVersion is the version of CoreDNS to be deployed if it is used
-	CoreDNSVersion = "v1.8.0"
+	CoreDNSVersion = "v1.8.4"
 
 	// ClusterConfigurationKind is the string kind value for the ClusterConfiguration struct
 	ClusterConfigurationKind = "ClusterConfiguration"
@@ -394,12 +394,21 @@ const (
 	ModeNode string = "Node"
 
 	// PauseVersion indicates the default pause image version for kubeadm
-	PauseVersion = "3.4.1"
+	PauseVersion = "3.5"
 
 	// CgroupDriverSystemd holds the systemd driver type
 	CgroupDriverSystemd = "systemd"
-	// CgroupDriverCgroupfs holds the cgroupfs driver type
-	CgroupDriverCgroupfs = "cgroupfs"
+
+	// The username of the user that kube-controller-manager runs as.
+	KubeControllerManagerUserName string = "kubeadm-kcm"
+	// The username of the user that kube-apiserver runs as.
+	KubeAPIServerUserName string = "kubeadm-kas"
+	// The username of the user that kube-scheduler runs as.
+	KubeSchedulerUserName string = "kubeadm-ks"
+	// The username of the user that etcd runs as.
+	EtcdUserName string = "kubeadm-etcd"
+	// The group of users that are allowed to read the service account private key.
+	ServiceAccountKeyReadersGroupName string = "kubeadm-sa-key-readers"
 )
 
 var (
@@ -458,8 +467,8 @@ var (
 		19: "3.4.13-0",
 		20: "3.4.13-0",
 		21: "3.4.13-0",
-		22: "3.4.13-3",
-		23: "3.4.13-3",
+		22: "3.5.0-rc.0-0",
+		23: "3.5.0-rc.0-0",
 	}
 
 	// KubeadmCertsClusterRoleName sets the name for the ClusterRole that allows

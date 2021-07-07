@@ -907,9 +907,24 @@ var schemaYAML = typed.YAMLObject(`types:
       type:
         scalar: string
       default: ""
+- name: io.k8s.api.apps.v1.StatefulSetPersistentVolumeClaimRetentionPolicy
+  map:
+    fields:
+    - name: whenDeleted
+      type:
+        scalar: string
+    - name: whenScaled
+      type:
+        scalar: string
 - name: io.k8s.api.apps.v1.StatefulSetSpec
   map:
     fields:
+    - name: minReadySeconds
+      type:
+        scalar: numeric
+    - name: persistentVolumeClaimRetentionPolicy
+      type:
+        namedType: io.k8s.api.apps.v1.StatefulSetPersistentVolumeClaimRetentionPolicy
     - name: podManagementPolicy
       type:
         scalar: string
@@ -943,6 +958,9 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: io.k8s.api.apps.v1.StatefulSetStatus
   map:
     fields:
+    - name: availableReplicas
+      type:
+        scalar: numeric
     - name: collisionCount
       type:
         scalar: numeric
@@ -1188,9 +1206,24 @@ var schemaYAML = typed.YAMLObject(`types:
       type:
         scalar: string
       default: ""
+- name: io.k8s.api.apps.v1beta1.StatefulSetPersistentVolumeClaimRetentionPolicy
+  map:
+    fields:
+    - name: whenDeleted
+      type:
+        scalar: string
+    - name: whenScaled
+      type:
+        scalar: string
 - name: io.k8s.api.apps.v1beta1.StatefulSetSpec
   map:
     fields:
+    - name: minReadySeconds
+      type:
+        scalar: numeric
+    - name: persistentVolumeClaimRetentionPolicy
+      type:
+        namedType: io.k8s.api.apps.v1beta1.StatefulSetPersistentVolumeClaimRetentionPolicy
     - name: podManagementPolicy
       type:
         scalar: string
@@ -1224,6 +1257,9 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: io.k8s.api.apps.v1beta1.StatefulSetStatus
   map:
     fields:
+    - name: availableReplicas
+      type:
+        scalar: numeric
     - name: collisionCount
       type:
         scalar: numeric
@@ -1667,9 +1703,24 @@ var schemaYAML = typed.YAMLObject(`types:
       type:
         scalar: string
       default: ""
+- name: io.k8s.api.apps.v1beta2.StatefulSetPersistentVolumeClaimRetentionPolicy
+  map:
+    fields:
+    - name: whenDeleted
+      type:
+        scalar: string
+    - name: whenScaled
+      type:
+        scalar: string
 - name: io.k8s.api.apps.v1beta2.StatefulSetSpec
   map:
     fields:
+    - name: minReadySeconds
+      type:
+        scalar: numeric
+    - name: persistentVolumeClaimRetentionPolicy
+      type:
+        namedType: io.k8s.api.apps.v1beta2.StatefulSetPersistentVolumeClaimRetentionPolicy
     - name: podManagementPolicy
       type:
         scalar: string
@@ -1703,6 +1754,9 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: io.k8s.api.apps.v1beta2.StatefulSetStatus
   map:
     fields:
+    - name: availableReplicas
+      type:
+        scalar: numeric
     - name: collisionCount
       type:
         scalar: numeric
@@ -2789,6 +2843,9 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: io.k8s.api.certificates.v1.CertificateSigningRequestSpec
   map:
     fields:
+    - name: expirationSeconds
+      type:
+        scalar: numeric
     - name: extra
       type:
         map:
@@ -2885,6 +2942,9 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: io.k8s.api.certificates.v1beta1.CertificateSigningRequestSpec
   map:
     fields:
+    - name: expirationSeconds
+      type:
+        scalar: numeric
     - name: extra
       type:
         map:
@@ -6217,12 +6277,6 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: sessionAffinityConfig
       type:
         namedType: io.k8s.api.core.v1.SessionAffinityConfig
-    - name: topologyKeys
-      type:
-        list:
-          elementType:
-            scalar: string
-          elementRelationship: atomic
     - name: type
       type:
         scalar: string
